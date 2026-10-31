@@ -1,0 +1,64 @@
+Ghostlink workspace mockup v1
+Generated: 2026-10-30
+Mode: Built-in image_gen tool
+Image: ghostlink-workspace-v1.png
+Purpose: High-fidelity design reference; illustrative terminal output, not an implemented application screenshot.
+
+Final generation prompt:
+
+Use case: ui-mockup.
+Asset type: High-fidelity desktop application design reference for Ghostlink, a Windows terminal and SSH workspace built with Rust, GPUI, and libghostty.
+Primary request: Create one exquisitely polished, plausible shipping-product screenshot of Ghostlink in its graphite dark theme. Render the actual application interface, straight-on and pixel-sharp, with the meticulous typography, spacing and finish of a premium professional developer tool. Landscape 16:10 composition, high resolution. One application window fills almost the entire image, with a narrow dark neutral desktop margin, gently rounded Windows 11 window corners and a restrained soft shadow. No perspective tilt, laptop, room, marketing headline, annotations, or collage.
+
+Visual design: quiet, precise, tactile. Warm graphite surfaces, subtle layered tonal contrast, thin hairline separators, warm off-white primary text, readable gray secondary text. A desaturated pale jade accent for active and connected states, muted amber for production identity, softly colored terminal syntax. Approximate palette: canvas #111517, chrome #1B2023, sidebar #171C1F, borders #2B3336, foreground #DCE3DF, jade #A8D8C0, amber #D7B77D. Avoid purple, neon, heavy gradients, glossy glass, decorative glows, oversized dashboard cards. A refined Segoe UI-like sans serif for interface chrome, Cascadia Code-like monospace for the terminal. High contrast and readable text. Crisp consistent thin line icons, small corner radii, disciplined 8-pixel spacing. No text about Rust, GPUI or libghostty in the product UI.
+
+Layout:
+1. Compact top title bar: small elegant abstract ghost outline emblem and exact wordmark "Ghostlink" at left. Centered modest command-search field reading "Search hosts, workspaces, commands" with small "Ctrl K" keycap. Standard Windows minimize, square maximize, and close controls at far right, not macOS traffic lights.
+2. Left sidebar approximately 235 logical pixels wide. Workspace selector "Engineering" with a small chevron near top. Section label "WORKSPACES", entries "Development" (subtly selected with jade indicator), "Infrastructure", "Scratchpad". Below, section "LOCAL", entries with tasteful shell icons "PowerShell", "Ubuntu · WSL", "Command Prompt". Below, section "SSH HOSTS" with small plus icon, entries "api-prod-01" with small green connection dot and a tiny amber "PROD" label, "api-staging", "db-prod-01", and "build-runner". Comfortable line spacing and softly muted metadata. Bottom anchored gear icon and label "Settings", plus a small sidebar-collapse control. Sparse, elegant, functional.
+3. Main content to right of sidebar. Slim tab bar containing active tab "Development", inactive tabs "Infrastructure" and "Scratchpad", then plus icon. Small split-pane and overflow actions at far right.
+4. Below tabs, two side-by-side real terminal panes, about 55/45 split. Thin vertical divider with a tiny unobtrusive handle. Left terminal is active with a very subtle jade focus line. Each has a compact pane header.
+5. Left pane header: terminal icon, "PowerShell", muted "LOCAL" small label; path "C:\dev\ghostlink" in small secondary text. Right pane header: lock icon, "api-prod-01", refined amber capsule "PRODUCTION", a small jade connection dot and "24 ms". Production identity is persistent and unmistakable, never garish.
+6. Thin bottom status bar: left "Development" and "2 sessions", right small icon plus "UTF-8" and "LF". No decorative metrics or charts.
+
+Terminal content: sharp and accurately typeset, ample padding and realistic monospace spacing, around 18-22 logical pixels line height. Content occupies the upper half to two-thirds of each pane, leaving calm working space below. Syntax color used thoughtfully. No fake AI panel or invented file browser.
+Left pane display these legible lines with clear spacing:
+"PS C:\dev\ghostlink> git status"
+"On branch main"
+"Your branch is up to date with 'origin/main'."
+""
+"nothing to commit, working tree clean"
+""
+"PS C:\dev\ghostlink> cargo test"
+"   Compiling ghostlink v0.1.0"
+"    Finished test profile in 2.41s"
+""
+"running 4 tests"
+"test terminal::resize ... ok"
+"test terminal::unicode ... ok"
+"test session::reconnect ... ok"
+"test workspace::restore ... ok"
+""
+"test result: ok. 4 passed; 0 failed"
+""
+"PS C:\dev\ghostlink> "
+Use mint green for successful results, pale blue paths, subtle warm gray supporting output. Visible slim jade caret after the final prompt.
+
+Right pane display:
+"jason@api-prod-01 /srv/ghostlink"
+"$ systemctl status ghostlink-api"
+"● ghostlink-api.service"
+"   Active: active (running)"
+"   Memory: 42.8M"
+""
+"$ journalctl -u ghostlink-api -n 5"
+"14:32:01  INFO  Server listening on :8080"
+"14:32:03  INFO  GET /health       200"
+"14:32:08  INFO  GET /api/hosts    200"
+"14:32:12  INFO  Session connected"
+"14:32:18  INFO  GET /health       200"
+""
+"jason@api-prod-01 /srv/ghostlink"
+"$ "
+Keep every line within its pane; avoid clipped or overflowing text. Real terminal output rather than charts. Very subtle terminal scrollbar at right edge if appropriate.
+
+Overall: a credible, gorgeous Windows application someone could build from this reference, with strong visual hierarchy, immaculate alignment, beautiful readable terminal typography, restrained branding, and a sense of speed and calm. The terminal is the hero. No extra windows, popups, promotional text, watermark, giant logos, or unreadable microtext.

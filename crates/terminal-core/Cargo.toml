@@ -1,0 +1,9 @@
+[package]
+name = "terminal-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ghostty-sys = { path = "../ghostty-sys" }
+anyhow.workspace = true

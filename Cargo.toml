@@ -1,0 +1,26 @@
+[workspace]
+members = ["crates/ghostty-sys", "crates/terminal-core", "crates/session", "crates/terminal-view", "crates/app"]
+default-members = ["crates/app"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+
+[workspace.dependencies]
+anyhow = "=1.0.104"
+gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+portable-pty = "=0.9.0"
+cc = "=1.8.0"
+async-channel = "=2.5.0"
+russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa"] }
+tokio = { version = "=1.54.1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros"] }
+zeroize = "=1.9.1"
+rand = "=0.10.3"
+tempfile = "=3.27.0"
+glob = "=0.3.4"
+
+[profile.dev]
+debug = 1

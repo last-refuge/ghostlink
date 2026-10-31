@@ -1,0 +1,32 @@
+name: Windows
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build pinned libghostty-vt
+        shell: pwsh
+        run: ./scripts/bootstrap.ps1
+      - name: Check formatting
+        shell: pwsh
+        run: ./scripts/dev.ps1 fmt
+      - name: Lint
+        shell: pwsh
+        run: ./scripts/dev.ps1 clippy
+      - name: Test
+        shell: pwsh
+        run: ./scripts/dev.ps1 test
+      - name: Build application
+        shell: pwsh
+        run: ./scripts/dev.ps1 build

@@ -1,0 +1,22 @@
+[package]
+name = "ghostlink"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ghostlink"
+path = "src/main.rs"
+
+[dependencies]
+terminal-view = { path = "../terminal-view" }
+session = { path = "../session" }
+gpui.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "=0.6.2"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

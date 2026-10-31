@@ -1,0 +1,19 @@
+[package]
+name = "session"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+terminal-core = { path = "../terminal-core" }
+anyhow.workspace = true
+async-channel.workspace = true
+portable-pty.workspace = true
+russh.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+glob.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+tempfile.workspace = true
