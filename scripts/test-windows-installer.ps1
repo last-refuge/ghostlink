@@ -6,6 +6,37 @@ $root = Split-Path -Parent $PSScriptRoot
 $cache = Join-Path $env:TEMP 'ghostlink-packaging'
 $build = Get-Content -Raw -LiteralPath (Join-Path $cache 'installer-build.json') | ConvertFrom-Json
 if ($build.ProjectRoot -ne $root) { throw 'Run scripts/package-windows.ps1 in this checkout first.' }
+if ($SkipLaunch) {
+    # This fixture never launches the production executable, so its installer
+    # marker can be private as well. Existing user sessions stay independent.
+    $build.RunningMutex += '.InstallerSmoke.' + [guid]::NewGuid().ToString('N')
+}
+
+# Shell links may expose a short path or a different drive/path alias on hosted
+# runners. Compare resolved file paths, while still rejecting a different file.
+if (!('GhostlinkInstallerSmokePaths' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class GhostlinkInstallerSmokePaths {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, StringBuilder path, uint capacity, uint flags);
+    public static string Resolve(string path) {
+        using (var file = File.OpenRead(path)) {
+            var buffer = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandle(file.SafeFileHandle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (length >= buffer.Capacity) throw new IOException("Resolved path exceeds buffer");
+            return buffer.ToString();
+        }
+    }
+}
+'@
+}
 
 function Assert-Test([bool]$Condition, [string]$Message) {
     if (!$Condition) { throw $Message }
@@ -65,7 +96,10 @@ try {
     Assert-Test (Test-Path -LiteralPath $shortcut) 'Start menu shortcut was not created.'
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcut)
-    Assert-Test ($link.TargetPath -eq $installedExe) 'Shortcut points to the wrong executable.'
+    Assert-Test (Test-Path -LiteralPath $link.TargetPath) "Shortcut target does not exist: $($link.TargetPath)"
+    $actualTarget = [GhostlinkInstallerSmokePaths]::Resolve($link.TargetPath)
+    $expectedTarget = [GhostlinkInstallerSmokePaths]::Resolve($installedExe)
+    Assert-Test ($actualTarget -eq $expectedTarget) "Shortcut points to '$actualTarget'; expected '$expectedTarget'."
     [void][Runtime.InteropServices.Marshal]::ReleaseComObject($link)
     [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
     Set-Content -LiteralPath (Join-Path $installDir 'user-notes.txt') -Value 'not installer owned' -Encoding utf8

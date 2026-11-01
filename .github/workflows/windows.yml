@@ -37,6 +37,13 @@ jobs:
       - name: Test install, upgrade, and uninstall
         shell: pwsh
         run: ./scripts/test-windows-installer.ps1 -SkipLaunch
+      - name: Upload failed installer fixture logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer-test-logs
+          path: ${{ runner.temp }}/ghostlink-packaging/smoke-*/*.log
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         with:
           name: ghostlink-windows-x86_64

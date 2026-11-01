@@ -11,6 +11,10 @@ makedepends=('git' 'rustup' 'clang' 'cmake' 'pkgconf' 'curl' 'tar' 'xz')
 checkdepends=('openssh')
 provides=('ghostlink')
 conflicts=('ghostlink')
+# makepkg's GCC LTO is incompatible with Cargo's native C archives (ring and
+# our terminal bridge). Keep Cargo's release profile and avoid a split debug
+# package: https://wiki.archlinux.org/title/Rust_package_guidelines
+options=('!lto' '!debug')
 source=("ghostlink::${GHOSTLINK_SOURCE_URL:-git+https://github.com/last-refuge/ghostlink.git#branch=main}")
 sha256sums=('SKIP')
 

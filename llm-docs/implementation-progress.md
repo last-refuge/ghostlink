@@ -152,6 +152,8 @@ The Linux installer detects architecture, verifies the selected download, uses p
 
 The first native CI run exposed a successful Robocopy exit code incorrectly propagated as failure, a container checkout ownership issue, macOS selecting the adjacent Ghostty dylib, and a Unix PTY EOF/process-exit race. Fixes normalize the checked bootstrap result, use the Actions commit SHA, copy the private static archive under a unique link name, and wait responsively for the actual child exit status. A Unix regression closes output before exiting with a nonzero status. Native CI results are tracked in the workflow; signing/notarization and real desktop integration gates remain separate work.
 
+The next native run passed both macOS and both Linux jobs, including packaged-app checks. Publication stayed blocked by Arch's default GCC LTO flags (incompatible with Rust's native C archives) and Windows shortcut-path spelling differences. The Arch recipe now disables makepkg's LTO/debug overrides and keeps Cargo's release profile. Windows shortcut checks resolve the actual file paths, and nonlaunching installer fixtures use private mutexes independent of existing user sessions. The local install/upgrade/uninstall gate passes with these changes; failed CI fixture logs are retained for diagnosis.
+
 ## Next increment
 
 1. Validate the new mouse and reconnect behavior on a live SSH server, then refine native Windows pointer/IME, font fallback, and mixed DPI.
