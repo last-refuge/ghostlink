@@ -104,12 +104,16 @@ pub(super) async fn authenticate(
             Err(error) => errors.push(format!("{}: {error}", path.display())),
         }
     }
+    let mut rejected = Vec::<String>::new();
+    let mut agent_rejected = false;
     for method in plan.methods.iter().copied() {
         if method == MethodKind::PublicKey && remaining.contains(&MethodKind::PublicKey) {
-            if let Some(result) = agent_auth(connection, username, &plan, &candidates).await?
-                && auth_result(result, &mut remaining)
-            {
-                return Ok(());
+            let (result, offered) = agent_auth(connection, username, &plan, &candidates).await?;
+            if let Some(result) = result {
+                if auth_result(result, &mut remaining) {
+                    return Ok(());
+                }
+                agent_rejected |= offered > 0;
             }
             let hash = network(connection.best_supported_rsa_hash())
                 .await?
@@ -139,8 +143,15 @@ pub(super) async fn authenticate(
                 if auth_result(result, &mut remaining) {
                     return Ok(());
                 }
+                rejected.push(
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
+        let hint = rejection_hint(username, &plan, &rejected, agent_rejected);
         if method == MethodKind::KeyboardInteractive
             && plan.interactive
             && plan.keyboard
@@ -176,7 +187,10 @@ pub(super) async fn authenticate(
                             let value = prompts
                                 .ask(
                                     question.prompt.chars().take(256).collect(),
-                                    format!("SSH authentication for {username}@{}", plan.host),
+                                    join(
+                                        format!("SSH authentication for {username}@{}.", plan.host),
+                                        &hint,
+                                    ),
                                     !question.echo,
                                 )
                                 .await?;
@@ -195,9 +209,15 @@ pub(super) async fn authenticate(
         {
             for attempt in 0..3 {
                 let detail = if attempt == 0 {
-                    format!("Password for {username}@{}", plan.host)
+                    join(format!("Password for {username}@{}.", plan.host), &hint)
                 } else {
-                    "That password was not accepted. Try again.".into()
+                    join(
+                        format!(
+                            "That password was not accepted for {username}@{}. Try again.",
+                            plan.host
+                        ),
+                        &hint,
+                    )
                 };
                 let password = prompts.ask("Password".into(), detail, true).await?;
                 if auth_result(
@@ -212,15 +232,60 @@ pub(super) async fn authenticate(
             }
         }
     }
-    let details = if errors.is_empty() {
-        String::new()
-    } else {
-        format!(" Key files that could not be read: {}", errors.join("; "))
-    };
-    bail!(
-        "SSH authentication failed for {username}@{}. No available identity was accepted. Check this host's IdentityFile and User in ~/.ssh/config.{details}",
+    let mut message = format!(
+        "SSH authentication failed for {username}@{}. No available identity was accepted.",
         plan.host
-    )
+    );
+    let hint = rejection_hint(username, &plan, &rejected, agent_rejected);
+    if hint.is_empty() {
+        message.push_str(" Check this host's IdentityFile and User in ~/.ssh/config.");
+    } else {
+        message = join(message, &hint);
+    }
+    if !errors.is_empty() {
+        message.push_str(&format!(
+            " Key files that could not be read: {}",
+            errors.join("; ")
+        ));
+    }
+    bail!(message)
+}
+
+/// Explain a fallback to typed credentials. Without this, a key rejected because
+/// Ghostlink signed in as the wrong account looks like a broken password prompt.
+fn rejection_hint(
+    username: &str,
+    plan: &config::Resolved,
+    rejected: &[String],
+    agent_rejected: bool,
+) -> String {
+    let mut hint = String::new();
+    if !rejected.is_empty() {
+        hint = format!(
+            "The server did not accept your SSH key{} ({}) for {username}.",
+            if rejected.len() == 1 { "" } else { "s" },
+            rejected.join(", ")
+        );
+    } else if agent_rejected {
+        hint = format!("The server did not accept the keys in your SSH agent for {username}.");
+    }
+    if plan.implicit_user {
+        hint = join(
+            hint,
+            &format!(
+                "This connection does not name a remote user, so Ghostlink signed in as your local username \"{username}\". If your account on this server has a different name, cancel and change the destination to user@{}.",
+                plan.host
+            ),
+        );
+    }
+    hint
+}
+fn join(first: String, second: &str) -> String {
+    match (first.is_empty(), second.is_empty()) {
+        (_, true) => first,
+        (true, false) => second.into(),
+        (false, false) => format!("{first} {second}"),
+    }
 }
 
 fn public_key(path: &Path) -> Result<PublicKey> {
@@ -307,9 +372,9 @@ async fn agent_auth(
     username: &str,
     plan: &config::Resolved,
     candidates: &[(PathBuf, PublicKey)],
-) -> Result<Option<client::AuthResult>> {
+) -> Result<(Option<client::AuthResult>, usize)> {
     let Some(path) = &plan.agent else {
-        return Ok(None);
+        return Ok((None, 0));
     };
     #[cfg(windows)]
     let agent = tokio::time::timeout(
@@ -324,11 +389,11 @@ async fn agent_auth(
     )
     .await;
     let Ok(Ok(mut agent)) = agent else {
-        return Ok(None);
+        return Ok((None, 0));
     };
     let identities = tokio::time::timeout(Duration::from_secs(2), agent.request_identities()).await;
     let Ok(Ok(identities)) = identities else {
-        return Ok(None);
+        return Ok((None, 0));
     };
     let mut keys = identities
         .into_iter()
@@ -353,7 +418,9 @@ async fn agent_auth(
         .await?
         .flatten();
     let mut last = None;
+    let mut offered = 0;
     for key in keys.into_iter().take(5) {
+        offered += 1;
         let result = tokio::time::timeout(
             Duration::from_secs(30),
             connection.authenticate_publickey_with(username, key, hash, &mut agent),
@@ -366,5 +433,5 @@ async fn agent_auth(
             break;
         }
     }
-    Ok(last)
+    Ok((last, offered))
 }

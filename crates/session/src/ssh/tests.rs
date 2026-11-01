@@ -1057,3 +1057,97 @@ async fn missing_windows_agent_explains_automatic_identity_discovery() {
     );
     assert!(message.contains("without an agent"), "{message}");
 }
+
+#[test]
+fn rejected_keys_explain_the_implicit_local_username_before_password_fallback() {
+    let fixture = Fixture::new();
+    fixture.trust();
+    let profile = fixture.automatic("");
+    fixture.write_identity("id_ed25519", None);
+    // No User line: the server only knows "tester", so the local login is rejected.
+    fs::write(
+        fixture.directory.path().join(".ssh/config"),
+        format!(
+            "Host fixture\n HostName 127.0.0.1\n Port {}\n IdentityAgent none\n",
+            fixture.port
+        ),
+    )
+    .unwrap();
+    let session = Session::ssh(profile, GridSize::default()).unwrap();
+    let update = wait(&session, |u| {
+        matches!(u.state, State::AwaitingCredential(_))
+    });
+    let State::AwaitingCredential(prompt) = update.state else {
+        unreachable!()
+    };
+    assert_eq!(prompt.label, "Password");
+    assert!(
+        prompt
+            .detail
+            .contains("did not accept your SSH key (id_ed25519)"),
+        "{}",
+        prompt.detail
+    );
+    assert!(
+        prompt.detail.contains("signed in as your local username"),
+        "{}",
+        prompt.detail
+    );
+    assert!(
+        prompt.detail.contains("user@127.0.0.1"),
+        "{}",
+        prompt.detail
+    );
+    session
+        .respond_credential(prompt.id, Some("wrong".into()))
+        .unwrap();
+    // Whether the server allows another try or ends authentication, the account
+    // name and the reason stay visible.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "Timed out waiting for SSH session"
+        );
+        let Ok(update) = session.updates.try_recv() else {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        };
+        match update.state {
+            State::AwaitingCredential(retry) => {
+                assert!(
+                    retry.detail.contains("was not accepted for"),
+                    "{}",
+                    retry.detail
+                );
+                assert!(retry.detail.contains("local username"), "{}", retry.detail);
+                session.respond_credential(retry.id, None).unwrap();
+                break;
+            }
+            State::Failed(error) => {
+                assert!(error.contains("local username"), "{error}");
+                break;
+            }
+            _ => {}
+        }
+    }
+}
+#[test]
+fn explicit_user_with_rejected_key_does_not_blame_the_username() {
+    let fixture = Fixture::new();
+    fixture.trust();
+    let profile = fixture.automatic("");
+    let session = Session::ssh(profile, GridSize::default()).unwrap();
+    let update = wait(&session, |u| {
+        matches!(u.state, State::AwaitingCredential(_))
+    });
+    let State::AwaitingCredential(prompt) = update.state else {
+        unreachable!()
+    };
+    assert!(
+        !prompt.detail.contains("local username"),
+        "{}",
+        prompt.detail
+    );
+    session.respond_credential(prompt.id, None).unwrap();
+}

@@ -5,6 +5,9 @@ use super::*;
 pub(super) struct Resolved {
     pub host: String,
     pub user: String,
+    /// True when neither the destination nor SSH config named a remote user,
+    /// so the local login name was used, as OpenSSH does.
+    pub implicit_user: bool,
     pub port: u16,
     pub identities: Vec<PathBuf>,
     pub agent: Option<PathBuf>,
@@ -56,6 +59,7 @@ fn resolve_with_user(profile: &SshProfile, home: &Path, local_user: &str) -> Res
         .unwrap_or_else(|| profile.host.clone())
         .replace("%h", &profile.host)
         .replace("%%", "%");
+    let implicit_user = profile.username.is_empty() && options.user.is_none();
     let user = if profile.username.is_empty() {
         options.user.unwrap_or_else(|| local_user.into())
     } else {
@@ -106,6 +110,7 @@ fn resolve_with_user(profile: &SshProfile, home: &Path, local_user: &str) -> Res
     Ok(Resolved {
         host,
         user,
+        implicit_user,
         port,
         identities,
         agent,
@@ -314,7 +319,11 @@ fn parse_file(
                         .collect::<std::result::Result<Vec<_>, _>>()?;
                     paths.sort();
                     for included in paths {
+                        // Like OpenSSH, Host lines inside an included file do not
+                        // change which block the including file's later lines are in.
+                        let outer = *active;
                         parse_file(&included, host, home, options, active, stack, count)?;
+                        *active = outer;
                     }
                 }
             }
@@ -498,10 +507,27 @@ mod tests {
         assert_eq!(result.port, 2200);
     }
     #[test]
+    fn included_host_blocks_do_not_capture_the_including_files_later_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        fs::create_dir_all(home.join(".ssh/config.d")).unwrap();
+        fs::write(
+            home.join(".ssh/config"),
+            "Include config.d/*\nUser remote\n",
+        )
+        .unwrap();
+        fs::write(home.join(".ssh/config.d/other"), "Host other\n Port 2222\n").unwrap();
+        let result = resolve_with_user(&profile(), home, "local").unwrap();
+        assert_eq!(result.user, "remote");
+        assert!(!result.implicit_user);
+        assert_eq!(result.port, 22);
+    }
+    #[test]
     fn defaults_do_not_require_config_or_agent() {
         let temp = tempfile::tempdir().unwrap();
         let result = resolve_with_user(&profile(), temp.path(), "local").unwrap();
         assert_eq!(result.user, "local");
+        assert!(result.implicit_user);
         assert_eq!(result.port, 22);
         assert_eq!(result.identities.len(), 3);
         assert!(result.identities[0].ends_with(".ssh/id_ed25519"));
