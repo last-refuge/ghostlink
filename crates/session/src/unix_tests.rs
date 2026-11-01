@@ -80,6 +80,13 @@ fn unix_pty_input_unicode_resize_exit_and_retained_copy() {
 }
 
 #[test]
+fn unix_pty_collects_exit_status_after_output_closes() {
+    let session = shell("exec 1>&- 2>&-; sleep 0.15; exit 23", GridSize::default());
+    let update = wait(&session, |u| matches!(u.state, State::Exited(_)));
+    assert_eq!(update.state, State::Exited(23));
+}
+
+#[test]
 fn unix_pty_drains_large_output_before_exit_and_stops_when_dropped() {
     let session = shell(
         "i=0; while [ \"$i\" -lt 5000 ]; do printf 'line-%s\\r\\n' \"$i\"; i=$((i+1)); done; printf 'GHOSTLINK_DONE\\r\\n'; exit 9",

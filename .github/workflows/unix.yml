@@ -1,9 +1,9 @@
 name: macOS and Linux
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -46,6 +46,12 @@ jobs:
           xcrun --find clang
           xcrun --find metal
           cmake --version
+      - name: Check Linux installer
+        if: runner.os == 'Linux'
+        run: |
+          bash -n install.sh scripts/test-linux-installer.sh
+          bash scripts/test-linux-installer.sh
+          python3 scripts/test-prepare-release.py
       - name: Install pinned Rust
         run: rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
       - name: Build pinned libghostty-vt
@@ -93,7 +99,7 @@ jobs:
           useradd --create-home builder
           cp -a "$GITHUB_WORKSPACE" /home/builder/repository
           chown -R builder:builder /home/builder/repository
-          revision=$(git rev-parse HEAD)
+          revision="$GITHUB_SHA"
           runuser -u builder -- rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
           runuser -u builder -- env \
             "GHOSTLINK_SOURCE_URL=git+file:///home/builder/repository#commit=$revision" \

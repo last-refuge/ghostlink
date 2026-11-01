@@ -1,0 +1,61 @@
+name: Build installers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: installers-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    uses: ./.github/workflows/windows.yml
+  unix:
+    uses: ./.github/workflows/unix.yml
+  publish:
+    name: Publish tested preview
+    if: github.ref == 'refs/heads/main'
+    needs: [windows, unix]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Collect and checksum installers
+        run: |
+          gh run download "$GITHUB_RUN_ID" --dir staging
+          python3 scripts/prepare-release.py staging release install.sh
+      - name: Publish preview channel
+        run: |
+          # Prevent an older build replacing a newer main preview.
+          [[ "$(gh api "repos/$GH_REPO/commits/main" --jq .sha)" == "$GITHUB_SHA" ]] || exit 1
+          cat > release-notes.md <<EOF
+          Automated preview built from $GITHUB_SHA. All native checks and packaging jobs passed.
+
+          Linux / Arch / Omarchy:
+          \`curl -fsSL https://github.com/$GH_REPO/releases/download/preview/install.sh | bash\`
+
+          Re-run the same command to update. Arch/Omarchy x86_64 uses pacman; other Linux builds install per user.
+          Linux archives target Ubuntu 24.04 or a compatible newer system. A working Vulkan driver is required.
+          Windows installers are unsigned. macOS apps are ad-hoc signed and are not notarized.
+          This preview channel is replaced after successful builds on main.
+          EOF
+          if gh release view preview >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/preview" -f sha="$GITHUB_SHA" -F force=true
+            gh release upload preview release/* --clobber
+            gh release edit preview --title 'Ghostlink Preview' --notes-file release-notes.md --prerelease
+          else
+            gh release create preview release/* --target "$GITHUB_SHA" \
+              --title 'Ghostlink Preview' --notes-file release-notes.md --prerelease
+          fi

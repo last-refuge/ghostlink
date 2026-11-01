@@ -133,4 +133,14 @@ bash scripts/dev.sh fmt
 
 Cargo and native build caches live under `~/Library/Caches/Ghostlink/build` on macOS, or `$XDG_CACHE_HOME/ghostlink/build` (default `~/.cache/ghostlink/build`) on Linux. `CARGO_TARGET_DIR` overrides Cargo's location. Zig artifacts install into `.deps/ghostty-<revision>/zig-out/<rust-target>/lib`, isolating architectures and Windows/WSL. `GHOSTTY_DIR` and `GHOSTTY_LIB_DIR` can point Cargo at an explicitly built source/archive directory instead. A documented compatibility patch under `vendor/xattr` preserves GPUI's older dependency API with modern libc; its upstream source, tests, and licenses are retained.
 
-GitHub Actions checks Windows, both Mac architectures, Linux x86_64/aarch64, and the Arch package. Unix jobs lint, test, build release artifacts, and upload them to the workflow run. These jobs do not publish GitHub releases or upload to the AUR. A successful CI build proves compilation and automated behavior, while native rendering, key mappings, clipboard, IME, and mixed-DPI behavior remain separate runtime checks.
+GitHub Actions checks Windows, both Mac architectures, Linux x86_64/aarch64, and the Arch package. The **Build installers** workflow runs on pushes to `main` or manual dispatch and publishes the **Preview** prerelease only after all jobs pass. Release assets have stable platform names and a `SHA256SUMS` manifest. The preview tag moves to the tested commit; release assets are replaced on updates. Pull requests run checks without publishing. No package is uploaded to the AUR.
+
+For prebuilt Linux / Arch / Omarchy installs, use:
+
+```bash
+curl -fsSL https://github.com/last-refuge/ghostlink/releases/download/preview/install.sh | bash
+```
+
+The script verifies checksums before installing. Arch/Omarchy x86_64 uses `pacman -U`; other Linux systems use `~/.local/bin/ghostlink` and `$XDG_DATA_HOME/applications` / `pixmaps` (default `~/.local/share`). The desktop launcher uses the full executable path, so it works even when `~/.local/bin` is absent from the desktop's PATH. Rerun to update. To remove a per-user install, delete that binary, `io.github.last-refuge.ghostlink.desktop`, and `pixmaps/ghostlink.png`; for the Arch package, use `sudo pacman -R ghostlink-git`. Saved connections and host trust are retained.
+
+A successful CI build proves compilation and automated behavior, while native rendering, key mappings, clipboard, IME, and mixed-DPI behavior remain separate runtime checks.

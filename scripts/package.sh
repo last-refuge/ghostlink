@@ -19,6 +19,9 @@ if [[ "$ghostlink_os" == macos ]]; then
     app="$stage/Ghostlink.app"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$binary" "$app/Contents/MacOS/ghostlink"
+    if otool -L "$binary" | grep -q 'libghostty-vt'; then
+        ghostlink_fail 'The app must link libghostty-vt statically before packaging.'
+    fi
     chmod 755 "$app/Contents/MacOS/ghostlink"
     cp "$ghostlink_root/packaging/macos/Info.plist" "$app/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"

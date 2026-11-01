@@ -144,6 +144,14 @@ Setup installs to `%LOCALAPPDATA%\Programs\Ghostlink`, creates one Start menu sh
 
 The installer integration test builds isolated fixtures with test-only IDs/shortcuts/registration. Initial install, payload/runtime checks, shortcut target, blocked update/uninstall under a running marker, version upgrade with a single uninstall entry, actual installed-app startup/marker creation, uninstall, and test-data preservation all pass. The fixture waits for the entire Inno uninstaller process tree before cleanup. Existing app processes and production saved data are untouched. All **71 Windows correctness tests**, Clippy with warnings denied, formatting, PowerShell parsing, workflow YAML parsing, and release packaging pass. Windows CI now builds/uploads setup and ZIP artifacts and runs the integration check; GUI launch is skipped on CI while all installer checks still run. The runner moves to Windows Server 2025 to meet the Windows 11 build-number minimum.
 
+## Increment 13: installer CI and Linux install command
+
+Added one **Build installers** workflow to run the reusable Windows and Unix checks together. Successful builds on `main` publish a public **Preview** prerelease with Windows setup/portable ZIP, both macOS architectures, both Linux architectures, and the x86_64 Arch package. Stable asset names and a SHA-256 manifest support the README's one-line installer; incomplete or duplicate platform sets fail publication. Pull requests check builds without publishing.
+
+The Linux installer detects architecture, verifies the selected download, uses pacman for Arch/Omarchy x86_64, and otherwise installs the binary and a PATH-independent desktop entry per user. Rerunning updates the binary by replacing its inode and retains saved data. Missing runtime libraries use apt/dnf when available. Isolated tests cover piped execution, paths with spaces, installation/update, checksum failure without replacing an existing install, and Arch selection; release-manifest tests reject incomplete and ambiguous builds.
+
+The first native CI run exposed a successful Robocopy exit code incorrectly propagated as failure, a container checkout ownership issue, macOS selecting the adjacent Ghostty dylib, and a Unix PTY EOF/process-exit race. Fixes normalize the checked bootstrap result, use the Actions commit SHA, copy the private static archive under a unique link name, and wait responsively for the actual child exit status. A Unix regression closes output before exiting with a nonzero status. Native CI results are tracked in the workflow; signing/notarization and real desktop integration gates remain separate work.
+
 ## Next increment
 
 1. Validate the new mouse and reconnect behavior on a live SSH server, then refine native Windows pointer/IME, font fallback, and mixed DPI.

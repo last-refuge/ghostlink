@@ -51,8 +51,18 @@ fn main() {
         .include(source.join("include"))
         .define("GHOSTTY_STATIC", None)
         .compile("ghostlink-bridge");
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=static={library}");
+    // Apple ld can prefer the adjacent dylib when Cargo forwards -l to a test
+    // executable. Give our private static archive an unambiguous link name.
+    if windows {
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        println!("cargo:rustc-link-lib=static={library}");
+    } else {
+        let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output"));
+        std::fs::copy(lib_dir.join(filename), output.join("libghostlink-vt.a"))
+            .expect("Copying private static terminal archive");
+        println!("cargo:rustc-link-search=native={}", output.display());
+        println!("cargo:rustc-link-lib=static=ghostlink-vt");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         println!("cargo:rustc-link-lib=m");
     }

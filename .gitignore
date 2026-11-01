@@ -7,3 +7,4 @@
 /packaging/arch/*.pkg.tar.*
 /vendor/xattr/Cargo.lock
 *.log
+__pycache__/

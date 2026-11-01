@@ -4,6 +4,18 @@ An SSH workspace for Windows, macOS, and Linux, built with Rust, GPUI, and libgh
 
 The app opens a connection picker where you can search saved servers, connect, or add, edit, and delete entries. The workspace's left sidebar lists open sessions; each session owns its tabs, split layouts, and focused pane. Tabs and panes share one authenticated SSH connection and keep independent remote shells, terminal state, scrollback, and selection. Local-shell backends (ConPTY on Windows, PTYs on Unix) are retained for testing and later work, without local launchers in the current interface.
 
+## Install
+
+On **Linux / Arch / Omarchy**, install the latest tested preview:
+
+```bash
+curl -fsSL https://github.com/last-refuge/ghostlink/releases/download/preview/install.sh | bash
+```
+
+Run the same command to update. The installer detects your CPU, verifies the download's SHA-256 checksum, and installs a launcher. On Arch/Omarchy x86_64 it uses **pacman**, including dependencies; other Linux systems install to `~/.local/bin` with a per-user desktop entry. Missing runtime libraries are installed through apt or dnf when available, with sudo requested only for system packages. Linux archives require Ubuntu 24.04 or a compatible newer system; a working Vulkan driver is required. Arch ARM uses the aarch64 Linux archive.
+
+Download the **Windows installer**, portable ZIP, or **macOS app** from [Ghostlink Preview](https://github.com/last-refuge/ghostlink/releases/tag/preview). Windows installers are unsigned; macOS apps are ad-hoc signed and not notarized. The preview channel follows successful builds of `main`. You can [review the Linux installer](install.sh) before running it.
+
 ## Build and run
 
 Build natively on the destination OS. Windows targets x86_64; macOS and Linux helpers support x86_64 and aarch64. Linux builds enable both Wayland and X11, including the Arch/Omarchy workflow. Install Git, Rust through [rustup](https://rustup.rs/), and the platform prerequisites in the [build guide](docs/building.md).
@@ -32,7 +44,7 @@ Build output and Zig package extraction stay outside the source tree: `%TEMP%` o
 
 Rust is pinned in `rust-toolchain.toml`, direct crate versions are exact, and `Cargo.lock` pins the dependency graph. The helper reuses an installed stable compiler only if it matches the pinned Rust version exactly.
 
-GitHub Actions defines Windows checks, native macOS/Linux builds on both architectures, and an Arch package build. Windows publishes installer/portable ZIP artifacts after an isolated install/upgrade/uninstall test; Unix jobs publish native build artifacts after linting and testing. These jobs do not publish releases.
+The [Build installers workflow](https://github.com/last-refuge/ghostlink/actions/workflows/installers.yml) runs Windows checks, native macOS/Linux builds on both architectures, and an Arch package build. After every platform passes, it publishes all installers and SHA-256 checksums to the Preview release. Windows also tests installation, upgrade, and uninstall; Linux also smoke-tests application startup on a virtual display. Pull requests run the checks without publishing. The workflow can also be started manually.
 
 ## Controls
 

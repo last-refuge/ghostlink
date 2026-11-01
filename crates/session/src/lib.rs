@@ -575,11 +575,18 @@ fn run_local(
             master.close();
         }
     }
-    let status = child
-        .0
-        .try_wait()?
-        .map(|status| status.exit_code())
-        .unwrap_or(0);
+    // PTY EOF can arrive before waitpid reports the exit. Keep cancellation
+    // responsive while collecting the real status instead of inventing success
+    // and killing a process that is still finishing its exit.
+    let status = loop {
+        if let Some(status) = child.0.try_wait()? {
+            break status.exit_code();
+        }
+        if cancelled.load(Ordering::Acquire) {
+            break 0;
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
     let _ = child.0.kill();
     // Unblock a producer before dropping the pseudoconsole. The read worker stays alive
     // and drains the remaining pipe bytes, even after its receiver has been dropped.

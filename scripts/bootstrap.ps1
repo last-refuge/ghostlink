@@ -59,3 +59,6 @@ if (!$SkipBuild) {
     if ($LASTEXITCODE -gt 7) { throw 'Copying native library artifacts failed.' }
 }
 Write-Host "Ghostty source: $source"
+# Robocopy's successful "files copied" result is 1. GitHub's PowerShell
+# wrapper propagates LASTEXITCODE, so normalize it after all checked commands.
+$global:LASTEXITCODE = 0
