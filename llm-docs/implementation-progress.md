@@ -90,11 +90,33 @@ Validation: **58 correctness tests pass**, with native regressions for soft-wrap
 
 The development build passes. Both manual latency probes pass with comparable results: SSH median **15.63 ms**, ConPTY median **31.01 ms** from input submission to terminal snapshot. See [performance measurements](performance.md) for percentiles and measurement limits.
 
+## Increment 8: full-screen tools and connection recovery
+
+Implemented items 2 and 3 from the earlier chat roadmap: full-screen tools and connection recovery. Added libghostty-vt mouse encoding for X10, UTF-8, SGR, URxvt, and SGR-pixel protocols, with button/modifier handling, drag/release, hover motion, and vertical/horizontal wheel input. Mouse modes come from the terminal parser. Native encoder state is retained for motion deduplication, with geometry refreshed on resize. Shift overrides application mouse reporting for terminal selection and history scrolling. Fractional wheel input accumulates; alternate-screen scrolling falls back to application cursor keys when requested. Focus loss, deactivation, and release outside the pane finish mouse capture.
+
+SSH transport loss now has an explicit Disconnected state and sidebar attention. A contextual Reconnect action and `Ctrl Shift R` retry in the existing pane. Its terminal stays visible while connecting. The chosen pane authenticates first; its disconnected siblings then reuse the recovered transport, preserving session/tab identities, split layout, zoom, and focus. An intentionally exited shell can be reopened independently. A closed cached transport is replaced under a shared asynchronous lock, keeping authentication serialized. Trust checks and interactive authentication run again for a new transport; stale credential/trust replies are discarded between attempts.
+
+Each worker retains its parser until retry succeeds. The new connection starts with fresh parser, input, keyboard, mouse, and application modes. The previous primary-screen history and last alternate-screen display are replayed as styled, wrapped text into its scrollback, protected from the new application's initial screen clear. Archive size is bounded at 64 MiB. Failed authentication/trust leaves the previous output available. Reconnection opens fresh shells; tmux is still needed to retain remote processes across a dropped transport.
+
+Validation: **66 correctness tests pass**, including native mouse protocols/modifiers/motion/wheels, alternate-scroll cursor encoding, styled history retention, interrupted parser/mode reset, remote mouse byte delivery, shared-transport recovery with one authentication, retained PTY size/history, shell-exit retry, changed-key blocking, simulated Shift selection/mouse capture cleanup, and reconnect UI/shortcut behavior. Clippy with warnings denied and formatting pass. The separate real-application gate passes with **Neovim 0.12.6** directly and inside **tmux 3.4** through WSL Ubuntu/ConPTY, covering cursor keys, mouse clicks, scrolling, resizing, Unicode paste, tmux's command prefix, exit, and alternate-screen restoration. The probe uses a private tmux socket and temporary editor state; regular CI does not require WSL or editor packages. See the README for reproduction.
+
+The real-application check exercises the shared terminal core and local transport; loopback SSH tests independently verify the protocol and recovery paths. A live external-server Neovim/tmux pass, native Windows pointer verification, Windows-agent validation, mixed DPI, IME, and accessibility remain open integration gates.
+
+The development build passes. All three manual tests pass: real Neovim/tmux compatibility and both transport latency probes. The native renderer probe remains comparable: preparation median **0.334 ms**, paint median **3.128 ms**. SSH input-to-snapshot median is **15.55 ms**, ConPTY **31.27 ms**. Full results and measurement limits are recorded in [performance measurements](performance.md).
+
+## Increment 9: brand artwork in the app
+
+Replaced the placeholder header emblem/text with the approved Ghostlink logo and added the matching illustration above the SSH welcome message. The artwork scales with available width and height, with a scrollable welcome area for constrained windows. The graphite header matches the logo's background. Both PNGs are embedded in the executable and shared across renders through cached image handles, so launch location does not affect loading.
+
+Validation: all **11 existing app tests**, Clippy with warnings denied, formatting, and the development build pass. The branded executable launches from outside the repository. The underlying terminal/session implementation is unchanged by this increment.
+
+Header alignment correction: the user's screenshot exposed a 60-pixel intrinsic image laid out at the top of a 40-pixel slot. The logo now uses explicit dimensions and flex centering. Layout inspection at 700, 1280, and 1947 logical pixels confirms matching image/container centers; the complete foreground mark fits within the clipping slot, with only background padding removed.
+
 ## Next increment
 
-1. Try the new selection/copy behavior against a live SSH session, then validate a remote full-screen application, IME, font fallback, and mixed DPI.
-2. Validate Windows agent authentication and a user-chosen remote full-screen application with resizing and terminal replies.
-3. Add saved hosts, jump hosts, and reconnect without clearing previous output.
-4. Add terminal mouse encoding and full key event metadata, screen-reader access, and further sustained-output rendering optimization.
+1. Validate the new mouse and reconnect behavior on a live SSH server, then refine native Windows pointer/IME, font fallback, and mixed DPI.
+2. Add recent servers, followed by session/layout restoration after restart.
+3. Add saved hosts, jump hosts, and live Windows-agent validation.
+4. Add full key-event metadata, screen-reader access, and further sustained-output rendering optimization.
 
 The integration milestone remains open. SSH protocol behavior and pane interactions have automated coverage; a live remote full-screen application gate has not been completed.

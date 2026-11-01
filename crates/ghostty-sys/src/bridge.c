@@ -11,6 +11,11 @@ struct GlTerminal {
     GhosttyRenderStateRowCells cells;
     GhosttyKeyEncoder encoder;
     GhosttyKeyEvent event;
+    GhosttyMouseEncoder mouse_encoder;
+    GhosttyMouseEvent mouse_event;
+    bool mouse_dirty;
+    uint32_t mouse_cell_width, mouse_cell_height;
+    uint16_t mouse_columns, mouse_rows;
     GhosttySelectionGesture gesture;
     GhosttySelectionGestureEvent selection_events[3];
     uint16_t columns, height;
@@ -34,6 +39,8 @@ void gl_terminal_free(GlTerminal *self) {
     for (size_t i = 0; i < 3; ++i) ghostty_selection_gesture_event_free(self->selection_events[i]);
     ghostty_selection_gesture_free(self->gesture, self->terminal);
     ghostty_key_event_free(self->event);
+    ghostty_mouse_event_free(self->mouse_event);
+    ghostty_mouse_encoder_free(self->mouse_encoder);
     ghostty_key_encoder_free(self->encoder);
     ghostty_render_state_row_cells_free(self->cells);
     ghostty_render_state_row_iterator_free(self->rows);
@@ -47,12 +54,15 @@ GlTerminal *gl_terminal_new(uint16_t columns, uint16_t rows) {
     if (!self) return NULL;
     self->columns = columns;
     self->height = rows;
+    self->mouse_dirty = true;
     if (ghostty_terminal_new(NULL, &self->terminal, columns, rows) != GHOSTTY_SUCCESS ||
         ghostty_render_state_new(NULL, &self->render) != GHOSTTY_SUCCESS ||
         ghostty_render_state_row_iterator_new(NULL, &self->rows) != GHOSTTY_SUCCESS ||
         ghostty_render_state_row_cells_new(NULL, &self->cells) != GHOSTTY_SUCCESS ||
         ghostty_key_encoder_new(NULL, &self->encoder) != GHOSTTY_SUCCESS ||
-        ghostty_key_event_new(NULL, &self->event) != GHOSTTY_SUCCESS) goto fail;
+        ghostty_key_event_new(NULL, &self->event) != GHOSTTY_SUCCESS ||
+        ghostty_mouse_encoder_new(NULL, &self->mouse_encoder) != GHOSTTY_SUCCESS ||
+        ghostty_mouse_event_new(NULL, &self->mouse_event) != GHOSTTY_SUCCESS) goto fail;
     if (ghostty_selection_gesture_new(NULL, &self->gesture) != GHOSTTY_SUCCESS ||
         ghostty_selection_gesture_event_new(NULL, &self->selection_events[0], GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS) != GHOSTTY_SUCCESS ||
         ghostty_selection_gesture_event_new(NULL, &self->selection_events[1], GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG) != GHOSTTY_SUCCESS ||
@@ -72,17 +82,18 @@ void gl_terminal_write(GlTerminal *self, const uint8_t *bytes, size_t len, GlWri
     self->reply = callback;
     self->reply_context = context;
     ghostty_terminal_vt_write(self->terminal, bytes, len);
+    self->mouse_dirty = true;
     self->reply = NULL;
     self->reply_context = NULL;
 }
 int gl_terminal_resize(GlTerminal *self, uint16_t columns, uint16_t rows) {
     GhosttyResult result = ghostty_terminal_resize(self->terminal, columns, rows, 0, 0);
-    if (result == GHOSTTY_SUCCESS) { self->columns = columns; self->height = rows; }
+    if (result == GHOSTTY_SUCCESS) { self->columns = columns; self->height = rows; self->mouse_dirty = true; }
     return result;
 }
 
 #define TRY(call) do { GhosttyResult result = (call); if (result != GHOSTTY_SUCCESS) return result; } while (0)
-int gl_terminal_snapshot(GlTerminal *self, GlCellCallback callback, GlSelectionCallback selected, void *context, GlCursor *cursor, bool *has_selection) {
+int gl_terminal_snapshot(GlTerminal *self, GlCellCallback callback, GlSelectionCallback selected, void *context, GlCursor *cursor, bool *has_selection, uint8_t *modes) {
     TRY(ghostty_render_state_update(self->render, self->terminal));
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
     TRY(ghostty_render_state_colors_get(self->render, &colors));
@@ -90,6 +101,13 @@ int gl_terminal_snapshot(GlTerminal *self, GlCellCallback callback, GlSelectionC
     GhosttyResult active_result = ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &active_selection);
     if (active_result != GHOSTTY_SUCCESS && active_result != GHOSTTY_NO_VALUE) return active_result;
     *has_selection = active_result == GHOSTTY_SUCCESS;
+    bool mouse_tracking = false;
+    GhosttyTerminalScreen screen;
+    GhosttyTerminalModeConfig alt_scroll = { GHOSTTY_MODE_ALT_SCROLL, false };
+    TRY(ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &mouse_tracking));
+    TRY(ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen));
+    TRY(ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_MODE, &alt_scroll));
+    *modes = (uint8_t)(mouse_tracking | ((screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE) << 1) | (alt_scroll.value << 2));
     bool visible = false, in_viewport = false;
     GhosttyRenderStateCursorVisualStyle cursor_style;
     TRY(ghostty_render_state_get(self->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &visible));
@@ -242,6 +260,66 @@ int gl_terminal_selection_copy(GlTerminal *self, uint8_t *buffer, size_t capacit
     GhosttyResult result = ghostty_terminal_selection_format_buf(self->terminal, options, buffer, capacity, written);
     *present = result != GHOSTTY_NO_VALUE;
     if (!*present) { *written = 0; return GHOSTTY_SUCCESS; }
+    if (!buffer && result == GHOSTTY_OUT_OF_SPACE) return GHOSTTY_SUCCESS;
+    return result;
+}
+
+int gl_terminal_mouse(GlTerminal *self, const GlMouse *input, uint8_t *buffer, size_t capacity, size_t *written) {
+    if (input->action > 2 || input->button > 7 || !input->cell_width || !input->cell_height) return GHOSTTY_INVALID_VALUE;
+    if (input->action == 0 && (input->button == 4 || input->button == 5)) {
+        bool tracking = false;
+        GhosttyTerminalScreen screen;
+        GhosttyTerminalModeConfig alt_scroll = { GHOSTTY_MODE_ALT_SCROLL, false };
+        TRY(ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking));
+        TRY(ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen));
+        TRY(ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_MODE, &alt_scroll));
+        if (!tracking && screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE && alt_scroll.value) return gl_terminal_key(self, input->button == 4 ? 5 : 6, input->mods, buffer, capacity, written);
+    }
+    GhosttyMouseEncoderSize size = GHOSTTY_INIT_SIZED(GhosttyMouseEncoderSize);
+    size.cell_width = input->cell_width;
+    size.cell_height = input->cell_height;
+    size.screen_width = self->columns * input->cell_width;
+    size.screen_height = self->height * input->cell_height;
+    GhosttyMods mods = 0;
+    if (input->mods & 1) mods |= GHOSTTY_MODS_SHIFT;
+    if (input->mods & 2) mods |= GHOSTTY_MODS_CTRL;
+    if (input->mods & 4) mods |= GHOSTTY_MODS_ALT;
+    if (input->mods & 8) mods |= GHOSTTY_MODS_SUPER;
+    bool pressed = input->button >= 1 && input->button <= 3;
+    bool deduplicate = true;
+    if (self->mouse_dirty) {
+        ghostty_mouse_encoder_setopt_from_terminal(self->mouse_encoder, self->terminal);
+        self->mouse_dirty = false;
+    }
+    if (self->mouse_cell_width != input->cell_width || self->mouse_cell_height != input->cell_height || self->mouse_columns != self->columns || self->mouse_rows != self->height) {
+        ghostty_mouse_encoder_setopt(self->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
+        self->mouse_cell_width = input->cell_width;
+        self->mouse_cell_height = input->cell_height;
+        self->mouse_columns = self->columns;
+        self->mouse_rows = self->height;
+    }
+    ghostty_mouse_encoder_setopt(self->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
+    ghostty_mouse_encoder_setopt(self->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &deduplicate);
+    ghostty_mouse_event_set_action(self->mouse_event, (GhosttyMouseAction)input->action);
+    if (input->button) ghostty_mouse_event_set_button(self->mouse_event, (GhosttyMouseButton)input->button);
+    else ghostty_mouse_event_clear_button(self->mouse_event);
+    ghostty_mouse_event_set_mods(self->mouse_event, mods);
+    GhosttyMousePosition position = { (float)(input->x * input->cell_width), (float)(input->y * input->cell_height) };
+    ghostty_mouse_event_set_position(self->mouse_event, position);
+    return ghostty_mouse_encoder_encode(self->mouse_encoder, self->mouse_event, (char *)buffer, capacity, written);
+}
+
+int gl_terminal_archive(GlTerminal *self, uint8_t *buffer, size_t capacity, size_t *written) {
+    GhosttySelection all = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttyResult result = ghostty_terminal_select_all(self->terminal, &all);
+    if (result == GHOSTTY_NO_VALUE) { *written = 0; return GHOSTTY_SUCCESS; }
+    if (result != GHOSTTY_SUCCESS) return result;
+    GhosttyTerminalSelectionFormatOptions options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
+    options.emit = GHOSTTY_FORMATTER_FORMAT_VT;
+    options.unwrap = true;
+    options.trim = true;
+    options.selection = &all;
+    result = ghostty_terminal_selection_format_buf(self->terminal, options, buffer, capacity, written);
     if (!buffer && result == GHOSTTY_OUT_OF_SPACE) return GHOSTTY_SUCCESS;
     return result;
 }

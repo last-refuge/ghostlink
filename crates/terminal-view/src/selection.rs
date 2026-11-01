@@ -7,7 +7,7 @@ struct CopySequence(u64);
 impl Global for CopySequence {}
 
 impl TerminalView {
-    fn selection_position(&self, position: Point<Pixels>) -> Option<(f64, f64)> {
+    pub(super) fn selection_position(&self, position: Point<Pixels>) -> Option<(f64, f64)> {
         self.screen.as_ref()?;
         let bounds = self.bounds?;
         Some((
@@ -20,7 +20,9 @@ impl TerminalView {
         let was_selecting = self.selecting;
         self.selecting = false;
         self.autoscroll = None;
-        self.drag_observers.clear();
+        if self.mouse_capture.is_none() {
+            self.drag_observers.clear();
+        }
         self.drag_pointer = None;
         was_selecting
     }
@@ -30,7 +32,13 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.requires_authentication() {
+        if self.requires_authentication()
+            || self.remote
+                && !matches!(
+                    self.state,
+                    State::Running | State::Exited(_) | State::Failed(_) | State::Disconnected(_)
+                )
+        {
             return;
         }
         let Some((x, y)) = self.selection_position(event.position) else {
@@ -50,16 +58,7 @@ impl TerminalView {
             }),
             cx,
         );
-        self.drag_observers
-            .push(cx.observe_window_activation(window, |this, window, cx| {
-                if !window.is_window_active() {
-                    this.selection_end(cx);
-                }
-            }));
-        self.drag_observers
-            .push(cx.on_blur(&self.focus, window, |this, _, cx| {
-                this.selection_end(cx);
-            }));
+        self.observe_pointer(window, cx);
         self.autoscroll = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -154,6 +153,14 @@ impl TerminalView {
         cx.notify();
     }
     pub(super) fn copy(&mut self, cx: &mut Context<Self>) {
+        if self.remote
+            && !matches!(
+                self.state,
+                State::Running | State::Exited(_) | State::Failed(_) | State::Disconnected(_)
+            )
+        {
+            return;
+        }
         let Some(session) = &self.session else {
             return;
         };
@@ -202,17 +209,19 @@ pub(super) fn install_drag_handlers(view: &Entity<TerminalView>, window: &mut Wi
                         this.selection_end(cx);
                     }
                 }
+                this.pointer_move(event, cx);
             });
         }
     });
     let released = view.downgrade();
     window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-        if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+        if phase == DispatchPhase::Capture {
             let _ = released.update(cx, |this, cx| {
-                if this.selecting {
+                if this.selecting && event.button == MouseButton::Left {
                     this.drag_pointer = Some(event.position);
                     this.selection_end(cx);
                 }
+                this.pointer_up(event, cx);
             });
         }
     });

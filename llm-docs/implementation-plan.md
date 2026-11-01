@@ -2,7 +2,7 @@
 
 Date: 2026-10-30
 
-Status: SSH sessions own their tabs and split panes, with automatic config/key discovery and shared authenticated connections. Scrollback selection, drag auto-scroll, word/line selection, and wrap-aware copying are implemented. Local shell UI is deferred. The integration prototype remains open for live full-screen compatibility, selection/IME validation, and accessibility. See [implementation progress](implementation-progress.md).
+Status: SSH sessions own their tabs and split panes, with automatic config/key discovery and shared authenticated connections. Scrollback selection, wrap-aware copying, terminal mouse reporting, and reconnect with retained output are implemented. Real Neovim and tmux checks pass through WSL. Local shell UI is deferred. The integration prototype remains open for live external-server compatibility, native pointer/IME validation, and accessibility. See [implementation progress](implementation-progress.md).
 
 ## Product direction
 

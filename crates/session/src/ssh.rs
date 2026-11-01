@@ -21,7 +21,7 @@ pub struct SshConnection(Arc<ConnectionInner>);
 struct ConnectionInner {
     profile: SshProfile,
     runtime: Option<tokio::runtime::Runtime>,
-    authenticated: tokio::sync::OnceCell<Arc<client::Handle<Verifier>>>,
+    authenticated: tokio::sync::Mutex<Option<Arc<client::Handle<Verifier>>>>,
 }
 impl SshConnection {
     pub fn new(profile: SshProfile) -> Result<Self> {
@@ -35,7 +35,7 @@ impl SshConnection {
         Ok(Self(Arc::new(ConnectionInner {
             profile,
             runtime: Some(runtime),
-            authenticated: tokio::sync::OnceCell::new(),
+            authenticated: tokio::sync::Mutex::new(None),
         })))
     }
     pub fn profile(&self) -> &SshProfile {
@@ -362,16 +362,19 @@ pub(crate) fn run(
     cancelled: Arc<AtomicBool>,
     last_screen: &mut Option<Arc<Snapshot>>,
     terminal: &mut Terminal,
+    reconnecting: bool,
 ) -> Result<State> {
     let runtime = connection.0.runtime.as_ref().expect("live SSH runtime");
     runtime.block_on(async {
+        let mut online = false;
         let cancellation = async {
             while !cancelled.load(Ordering::Acquire) { tokio::time::sleep(Duration::from_millis(10)).await; }
         };
-        tokio::select! {
-            result = connect(&connection, size, input, updates, stale, decisions, credentials, last_screen,terminal) => result,
+        let result=tokio::select! {
+            result = connect(&connection, size, input, updates, stale, decisions, credentials, last_screen,terminal,reconnecting,&mut online) => result,
             _ = cancellation => Ok(State::Exited(0)),
-        }
+        };
+        match result { Err(error) if online => Ok(State::Disconnected(format!("{error:#}"))), other => other }
     })
 }
 
@@ -599,6 +602,8 @@ async fn connect(
     credentials: Receiver<CredentialReply>,
     last_screen: &mut Option<Arc<Snapshot>>,
     terminal: &mut Terminal,
+    reconnecting: bool,
+    online: &mut bool,
 ) -> Result<State> {
     publish(
         updates,
@@ -608,23 +613,31 @@ async fn connect(
             state: State::Connecting,
         },
     );
-    let connection = shared
-        .0
-        .authenticated
-        .get_or_try_init(|| {
-            authenticate_connection(
-                shared.0.profile.clone(),
-                updates,
-                stale,
-                decisions,
-                credentials,
-            )
-        })
-        .await?;
-    ensure!(
-        !connection.is_closed(),
-        "SSH connection has closed. Connect to this server again."
-    );
+    let connection = {
+        let mut authenticated = shared.0.authenticated.lock().await;
+        if authenticated
+            .as_ref()
+            .is_some_and(|connection| connection.is_closed())
+        {
+            *authenticated = None;
+        }
+        if authenticated.is_none() {
+            *authenticated = Some(
+                authenticate_connection(
+                    shared.0.profile.clone(),
+                    updates,
+                    stale,
+                    decisions,
+                    credentials,
+                )
+                .await?,
+            );
+        }
+        authenticated
+            .as_ref()
+            .expect("authenticated transport")
+            .clone()
+    };
     let channel = tokio::time::timeout(Duration::from_secs(15), connection.channel_open_session())
         .await
         .context("SSH channel open timed out")??;
@@ -658,6 +671,10 @@ async fn connect(
         }
         *last_screen = Some(Arc::new(terminal.snapshot()?));
         return Err(error);
+    }
+    *online = true;
+    if reconnecting {
+        terminal.prepare_reconnect()?;
     }
     let (write_tx, write_rx) = async_channel::bounded::<Outgoing>(64);
     let mut write_task = AbortWriter(tokio::spawn(async move {
@@ -714,12 +731,13 @@ async fn connect(
                     Input::Text(text) => text.into_bytes(),
                     Input::Paste(text) => terminal.encode_paste(&text),
                     Input::Key(key, mods) => terminal.encode_key(key, mods)?,
+                    Input::Mouse(event) => terminal.encode_mouse(event)?,
                     Input::Scroll(delta) => { terminal.scroll(delta); viewport_scrolled = true; dirty = true; continue; },
                     Input::Resize(new_size) => {
                         if size != new_size { terminal.resize(new_size)?; size = new_size; pending.push_back(Outgoing::Resize(size)); dirty = true; }
                         continue;
                     },
-                    Input::Select(_) | Input::Copy(_) => continue,
+                    Input::Select(_) | Input::Copy(_) | Input::Reconnect => continue,
                 };
                 if !bytes.is_empty() { pending_bytes += bytes.len(); pending.push_back(Outgoing::Bytes(bytes)); }
             },

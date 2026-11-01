@@ -10,6 +10,135 @@ use std::{
 };
 use terminal_core::GridSize;
 
+#[gpui::test]
+fn application_mouse_capture_and_shift_selection_do_not_conflict(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut view = TerminalView::from_session(
+            Err(anyhow::anyhow!("synthetic application viewport")),
+            "mouse fixture".into(),
+            String::new(),
+            true,
+            cx,
+        );
+        let mut terminal = terminal_core::Terminal::new(GridSize::default()).unwrap();
+        terminal.feed(b"\x1b[?1002h\x1b[?1006halpha beta");
+        view.screen = Some(std::sync::Arc::new(terminal.snapshot().unwrap()));
+        view.state = State::Running;
+        view
+    });
+    cx.update(|window, _| window.activate_window());
+    cx.simulate_resize(size(px(680.), px(390.)));
+    let start = position(&view, 0.1, 0.5, cx);
+    let end = position(&view, 4.9, 0.5, cx);
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: start,
+        click_count: 1,
+        ..Default::default()
+    });
+    cx.update(|_, cx| {
+        let v = view.read(cx);
+        assert!(v.mouse_capture.is_some());
+        assert!(!v.selecting);
+    });
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: end,
+        ..Default::default()
+    });
+    cx.update(|_, cx| assert!(view.read(cx).mouse_capture.is_none()));
+    let shift = gpui::Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: start,
+        click_count: 1,
+        modifiers: shift,
+        ..Default::default()
+    });
+    cx.update(|_, cx| {
+        let view = view.read(cx);
+        assert!(view.selecting);
+        assert!(view.mouse_capture.is_none());
+    });
+    cx.simulate_event(MouseMoveEvent {
+        position: end,
+        pressed_button: Some(MouseButton::Left),
+        modifiers: shift,
+    });
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: end,
+        modifiers: shift,
+        ..Default::default()
+    });
+    cx.update(|_, cx| assert!(!view.read(cx).selecting));
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Right,
+        position: start,
+        click_count: 1,
+        ..Default::default()
+    });
+    cx.update(|_, cx| assert!(view.read(cx).mouse_capture.is_some()));
+    cx.deactivate_window();
+    wait(cx, |cx| {
+        cx.update(|_, cx| view.read(cx).mouse_capture.is_none())
+    });
+}
+
+#[gpui::test]
+fn failed_ssh_connection_exposes_reconnect_and_the_shortcut_retries_in_place(
+    cx: &mut TestAppContext,
+) {
+    use std::{cell::Cell, rc::Rc};
+    let executor = cx.executor();
+    cx.on_quit(move || executor.allow_parking());
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = TerminalView::ssh(
+            session::SshProfile {
+                host: "127.0.0.1".into(),
+                port: 9,
+                username: "fixture".into(),
+                auth: session::SshAuth::Agent,
+                known_hosts: "unused-test-known-hosts".into(),
+            },
+            cx,
+        );
+        window.focus(&view.focus);
+        view
+    });
+    wait(cx, |cx| {
+        cx.update(|_, cx| matches!(view.read(cx).state, State::Failed(_)))
+    });
+    assert!(cx.debug_bounds("reconnect").is_some());
+    cx.simulate_keystrokes("x");
+    cx.update(|_, cx| {
+        assert!(
+            view.read(cx)
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("Reconnect"))
+        )
+    });
+    let requests = Rc::new(Cell::new(0));
+    let count = requests.clone();
+    let _subscription = cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event, _| {
+            if matches!(event, crate::TerminalEvent::Reconnecting) {
+                count.set(count.get() + 1)
+            }
+        })
+    });
+    cx.simulate_keystrokes("ctrl-shift-r");
+    assert_eq!(requests.get(), 1);
+    wait(cx, |cx| {
+        cx.update(|_, cx| matches!(view.read(cx).state, State::Failed(_)))
+    });
+    assert!(cx.debug_bounds("reconnect").is_some());
+}
+
 fn fixture<'a>(
     cx: &'a mut TestAppContext,
     command: &str,

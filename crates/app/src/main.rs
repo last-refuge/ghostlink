@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod brand;
 mod chrome;
 mod connect;
 mod field;
@@ -11,9 +12,9 @@ mod ui;
 use connect::{ConnectEvent, ConnectForm};
 use gpui::{
     AnyElement, App, Application, Bounds, Context, CursorStyle, Div, Entity, FocusHandle,
-    Focusable, FontWeight, KeyBinding, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels,
-    ScrollHandle, Size, Stateful, TitlebarOptions, Window, WindowBounds, WindowOptions, actions,
-    canvas, div, prelude::*, px, relative, rgb, rgba, size,
+    Focusable, FontWeight, KeyBinding, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit,
+    Pixels, ScrollHandle, Size, Stateful, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, canvas, div, img, prelude::*, px, relative, rgb, rgba, size,
 };
 use layout::{Axis, Layout};
 use session::{SshConnection, SshProfile};
@@ -58,6 +59,7 @@ struct OpenSession {
     active: usize,
     next_tab: usize,
     tabs_scroll: ScrollHandle,
+    recovery_owner: Option<usize>,
 }
 #[derive(Clone, Copy)]
 struct SplitDrag {
@@ -147,6 +149,7 @@ impl Workspace {
             active: 0,
             next_tab: 1,
             tabs_scroll: ScrollHandle::new(),
+            recovery_owner: None,
         });
         self.active = self.sessions.len() - 1;
         self.open_terminal(false, Axis::Columns, window, cx);
@@ -174,10 +177,35 @@ impl Workspace {
         cx.subscribe_in(
             &terminal,
             window,
-            move |this, _, _: &TerminalEvent, window, cx| {
+            move |this, terminal, event: &TerminalEvent, window, cx| {
+                if let Some(session) = this.sessions.iter_mut().find(|s| s.id == session_id) {
+                    match event {
+                        TerminalEvent::Reconnecting => session.recovery_owner = Some(pane_id),
+                        TerminalEvent::StateChanged
+                            if session.recovery_owner == Some(pane_id)
+                                && terminal.read(cx).is_running() =>
+                        {
+                            session.recovery_owner = None;
+                            // The requested pane authenticates first, keeping prompts in place.
+                            // Siblings then reuse that transport; intentionally exited shells stay closed.
+                            let recover: Vec<_> = session
+                                .tabs
+                                .iter()
+                                .flat_map(|tab| &tab.panes)
+                                .filter(|p| p.terminal.read(cx).is_disconnected())
+                                .map(|p| p.terminal.clone())
+                                .collect();
+                            for pane in recover {
+                                pane.update(cx, |view, cx| view.reconnect(cx));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 // A pending new tab must not hide the initial connection's prompt.
                 // Keep other sessions undisturbed when a background connection asks.
-                if this.connect_form.is_none()
+                if matches!(event, TerminalEvent::AuthenticationRequired)
+                    && this.connect_form.is_none()
                     && this
                         .sessions
                         .get(this.active)
@@ -564,6 +592,12 @@ impl Workspace {
                             .iter()
                             .flat_map(|tab| &tab.panes)
                             .any(|pane| pane.terminal.read(cx).requires_authentication());
+                        let disconnected = session
+                            .tabs
+                            .iter()
+                            .flat_map(|tab| &tab.panes)
+                            .filter(|p| p.terminal.read(cx).is_disconnected())
+                            .count();
                         div()
                             .id(("session", id))
                             .mb_1()
@@ -631,9 +665,18 @@ impl Workspace {
                                 div()
                                     .text_xs()
                                     .line_height(px(16.))
-                                    .text_color(rgb(if attention { 0xd7b77d } else { 0x8e9b9e }))
+                                    .text_color(rgb(if attention || disconnected > 0 {
+                                        0xd7b77d
+                                    } else {
+                                        0x8e9b9e
+                                    }))
                                     .child(if attention {
                                         "Authentication needed".to_owned()
+                                    } else if disconnected > 0 {
+                                        format!(
+                                            "Disconnected · {disconnected} {}",
+                                            if disconnected == 1 { "pane" } else { "panes" }
+                                        )
                                     } else {
                                         format!(
                                             "{} {}",
@@ -796,30 +839,56 @@ impl Workspace {
     }
     fn session_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(tab) = self.active_tab() else {
+            let artwork = brand::welcome_image_size(self.viewport, self.sidebar);
             return div()
+                .id("welcome-screen")
+                .debug_selector(|| "welcome-screen".into())
                 .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_3()
+                .min_w_0()
+                .min_h_0()
+                .overflow_y_scroll()
                 .child(
                     div()
-                        .text_xl()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Connect to your server"),
-                )
-                .child(
-                    div()
-                        .text_color(rgb(0x8e9b9e))
-                        .child("Your sessions live on the left. Each keeps its own tabs."),
-                )
-                .child(
-                    div()
-                        .mt_2()
-                        .text_xs()
-                        .text_color(rgb(0xa8d8c0))
-                        .child("Ctrl Shift K   Connect with SSH"),
+                        .w_full()
+                        .min_h_full()
+                        .p_6()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_3()
+                        .child(
+                            img(brand::illustration())
+                                .id("welcome-artwork")
+                                .debug_selector(|| "welcome-artwork".into())
+                                .w(artwork.width)
+                                .h(artwork.height)
+                                .flex_none()
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .child(
+                            div()
+                                .text_xl()
+                                .line_height(px(28.))
+                                .text_center()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Connect to your server"),
+                        )
+                        .child(
+                            div()
+                                .max_w_full()
+                                .text_center()
+                                .text_color(rgb(0x8e9b9e))
+                                .child("Your sessions live on the left. Each keeps its own tabs."),
+                        )
+                        .child(
+                            div()
+                                .mt_2()
+                                .text_center()
+                                .text_xs()
+                                .text_color(rgb(0xa8d8c0))
+                                .child("Ctrl Shift K   Connect with SSH"),
+                        ),
                 )
                 .into_any_element();
         };
@@ -955,15 +1024,30 @@ impl Render for Workspace {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .bg(rgb(0x1b2023))
+                    .bg(rgb(0x111517))
                     .border_b_1()
                     .border_color(rgb(0x2b3336))
-                    .child(div().text_color(rgb(0xa8d8c0)).text_lg().child("◈"))
                     .child(
                         div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Ghostlink"),
+                            .id("brand-logo")
+                            .debug_selector(|| "brand-logo".into())
+                            .w(px(180.))
+                            .h(px(40.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .overflow_hidden()
+                            // Keep the asset's 3:1 ratio. Only its outer padding is clipped.
+                            .child(
+                                img(brand::logo())
+                                    .id("brand-logo-image")
+                                    .debug_selector(|| "brand-logo-image".into())
+                                    .w(px(180.))
+                                    .h(px(60.))
+                                    .flex_none()
+                                    .object_fit(ObjectFit::Contain),
+                            ),
                     )
                     .when_some(
                         self.sessions

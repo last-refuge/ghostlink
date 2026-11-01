@@ -34,6 +34,7 @@ Rust is pinned in `rust-toolchain.toml`, direct crate versions are exact, and `C
 | Focus next pane | `Ctrl Shift J` |
 | Zoom / restore focused pane | `Ctrl Shift Z` |
 | Connect SSH | `Ctrl Shift K` or Connect SSH |
+| Reconnect a disconnected session | `Ctrl Shift R` or Reconnect in its pane |
 | Toggle sidebar | `Ctrl Shift B` |
 | Select text | Drag; hold near or beyond the top/bottom edge to scroll through history |
 | Select word / logical line | Double-click / triple-click; drag to extend by words / lines |
@@ -41,8 +42,11 @@ Rust is pinned in `rust-toolchain.toml`, direct crate versions are exact, and `C
 | Clear selection | `Escape`, a new click, or typing |
 | Paste clipboard | `Ctrl Shift V` |
 | Scroll history | Mouse wheel |
+| Select / scroll history inside a mouse-enabled application | Hold `Shift` while dragging / scrolling |
 
 Copy joins soft-wrapped terminal rows while preserving real line breaks, Unicode, and indentation. Scrolling keeps the selection attached to its text. Selection and copy remain available after the shell exits or disconnects, until its pane is closed. Copying with no selection leaves the clipboard unchanged.
+
+Applications such as Neovim and tmux receive mouse clicks, drag/release events, motion, and vertical/horizontal scrolling when they request mouse reporting. Hold Shift for terminal text selection or history scrolling. Alternate-screen applications that request alternate scrolling receive cursor keys when mouse reporting is off.
 
 Closing a pane terminates its remote shell. Closing a tab terminates its panes; closing a sidebar session terminates all its tabs. Other sessions keep running. Closing a session's final tab removes its sidebar entry, and closing the final session returns to the welcome view. Application shutdown requests worker cancellation through GPUI's asynchronous quit hook. Tabs and layouts are retained while switching sessions within the running app; restart recovery remains future work.
 
@@ -51,6 +55,8 @@ Closing a pane terminates its remote shell. Closing a tab terminates its panes; 
 Open **Connect SSH**, enter a server or SSH alias, and press Enter. The single destination field accepts `server`, `user@server`, `user@server:2222`, and bracketed IPv6 addresses. Ghostlink resolves the username, port, and identities from your SSH config, then tries available keys automatically. Passphrases, passwords, and keyboard-interactive challenges appear only when needed. Secrets are masked when appropriate and are never saved to settings, workspace files, or logs.
 
 Connecting adds a session to the sidebar with its first tab. Use `+` or `Ctrl Shift T` for another tab on that server, or split the current tab for another pane. These shells reuse the existing authenticated transport, without another login prompt or stored password. Switching sidebar entries restores each session's selected tab, layout, zoom, and focus. Authentication prompts reveal their owning tab within the active session; a background session displays **Authentication needed** without taking focus. The current destination stays visible in the app header, including when the sidebar is hidden. Every pane has its own remote PTY and resizing.
+
+Disconnected panes and their sidebar session show their status. Choose **Reconnect** or press `Ctrl Shift R` in a disconnected pane. That pane authenticates first; other panes disconnected from the session then reuse the recovered connection. Tabs, split layouts, zoom, focus, and each pane's previous output are retained. An intentionally exited shell can also be reopened in place. Previous styled output remains in scrollback, including the last full-screen application display; fresh terminal modes prevent an interrupted application from affecting the new shell. Reconnecting creates fresh remote shells. Use tmux when remote processes need to survive a disconnect.
 
 An unknown server presents its algorithm and SHA-256 fingerprint **before authentication**. Verify the fingerprint with a trusted source, then select **Trust key and connect**. Accepted keys are stored in Ghostlink's own OpenSSH-format file at `%LOCALAPPDATA%\Ghostlink\known_hosts`; the user's OpenSSH file is not modified. Changed keys block the connection, with no automatic replacement. Malformed or unreadable trust files also block connections.
 
@@ -69,9 +75,17 @@ This is a documented subset of SSH config, not full OpenSSH compatibility. Syste
 ./scripts/dev.ps1 fmt
 ```
 
-The 58-test suite includes real ConPTY/PowerShell round trips; an in-process russh server for trust, automatic identity discovery, encrypted keys, RSA signatures, password and keyboard-interactive prompts, shared authentication and independent channel lifetimes, interleaved startup messages, genuine shell refusal/channel closure, PTY sizing, terminal replies, large output, exit status, and cancellation; SSH config precedence/includes; simulated GPUI session/tab switching, close/focus restoration, pane layouts, destination forms, credential interactions, selection, clipboard, and drag auto-scroll; responsive tab-bar layout and selected-tab visibility, retained row layout and Unicode/style boundaries; and recorded VT sequences covering Unicode, alternate screens, scrollback, wrapped-line copying, cursor-key modes, and bracketed paste. Selection tests cover copying after shell exit, tracked anchors during output/resize, word/line dragging, wide/combining graphemes, release outside the pane, focus changes, and retained-worker shutdown. Tests use generated identities and temporary trust/config files and never connect to an external host or read the user's keys.
+The 66-test suite includes real ConPTY/PowerShell round trips; an in-process russh server for trust, automatic identity discovery, encrypted keys, RSA signatures, password and keyboard-interactive prompts, shared authentication and independent channel lifetimes, interleaved startup messages, genuine shell refusal/channel closure, PTY sizing, terminal replies, large output, exit status, and cancellation; SSH config precedence/includes; simulated GPUI session/tab switching, close/focus restoration, pane layouts, destination forms, credential interactions, selection, clipboard, and drag auto-scroll; responsive tab-bar layout and selected-tab visibility, retained row layout and Unicode/style boundaries; and recorded VT sequences covering Unicode, alternate screens, scrollback, wrapped-line copying, cursor-key modes, and bracketed paste. Selection tests cover copying after shell exit, tracked anchors during output/resize, word/line dragging, wide/combining graphemes, release outside the pane, focus changes, and retained-worker shutdown. Tests use generated identities and temporary trust/config files and never connect to an external host or read the user's keys.
 
 Two additional manual probes measure local and loopback SSH input-to-snapshot latency. A native Windows renderer probe measures preparation and paint work. See [performance measurements](llm-docs/performance.md) for results and reproduction commands.
+
+A separate manual gate runs real Neovim, both directly and inside tmux, through WSL Ubuntu and the terminal backend. It checks cursor keys, mouse clicks, scrolling, resizing, Unicode paste, tmux's command prefix, process exit, and alternate-screen restoration. It passed with **Neovim 0.12.6 and tmux 3.4**. SSH loopback tests independently check mouse bytes, shared-transport recovery, preserved history/size, shell-exit retry, and changed-key blocking. A live external-server/full-screen pass and native Windows pointer interaction remain separate validation steps.
+
+```powershell
+$env:CARGO_TARGET_DIR = Join-Path $env:TEMP 'ghostlink-target'
+$env:GHOSTLINK_NVIM = '/usr/bin/nvim' # Or a portable Neovim executable inside Ubuntu
+cargo +stable test --locked -p session full_screen:: -- --ignored --nocapture
+```
 
 ## Structure
 
@@ -89,9 +103,9 @@ The native bridge uses [Ghostty commit f64f4aca](https://github.com/ghostty-org/
 
 ## Remaining prototype work
 
-- Live Windows-agent validation, jump hosts, and reconnect.
+- Live Windows-agent validation and jump hosts.
 - A real remote full-screen application compatibility pass (for example, Neovim).
-- Full keyboard protocol coverage, terminal mouse reporting, and cursor-shape fidelity.
+- Full keyboard protocol coverage, complete key-event metadata, and cursor-shape fidelity.
 - Visual verification of selection, clipboard, font fallback, emoji, and mixed-DPI rendering.
 - Japanese/Chinese IME validation; composition and candidate bounds are wired but unverified.
 - Screen-reader integration and keyboard-accessible application controls.

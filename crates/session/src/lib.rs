@@ -1,5 +1,7 @@
 //! Session workers and bounded transport queues.
 
+#[cfg(all(test, windows))]
+mod full_screen;
 #[cfg(test)]
 mod probe;
 mod ssh;
@@ -20,7 +22,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use terminal_core::{GridSize, Key, Modifiers, SelectionInput, Snapshot, Terminal};
+use terminal_core::{GridSize, Key, Modifiers, MouseInput, SelectionInput, Snapshot, Terminal};
 
 #[derive(Clone, Debug)]
 pub struct LocalProfile {
@@ -53,6 +55,8 @@ pub enum Input {
     Key(Key, Modifiers),
     Resize(GridSize),
     Scroll(i32),
+    Mouse(MouseInput),
+    Reconnect,
     Select(SelectionInput),
     Copy(Sender<std::result::Result<Option<String>, String>>),
 }
@@ -66,6 +70,7 @@ pub enum State {
     AwaitingCredential(CredentialPrompt),
     Running,
     Exited(u32),
+    Disconnected(String),
     Failed(String),
 }
 #[derive(Clone, Debug)]
@@ -117,20 +122,24 @@ impl Session {
         thread::Builder::new()
             .name("terminal-session".into())
             .spawn(move || {
+                let mut transport = Some((profile, events));
                 terminal_worker(
                     size,
                     readonly_input,
                     &updates_tx,
                     &stale_updates,
                     worker_cancelled.clone(),
+                    false,
                     |terminal, last_screen| {
+                        let (profile, events) =
+                            transport.take().expect("local transport starts once");
                         run_local(
                             profile,
                             size,
                             events,
                             &updates_tx,
                             &stale_updates,
-                            worker_cancelled,
+                            worker_cancelled.clone(),
                             last_screen,
                             terminal,
                         )
@@ -169,24 +178,33 @@ impl Session {
         thread::Builder::new()
             .name("ssh-session".into())
             .spawn(move || {
+                let mut reconnecting = false;
                 terminal_worker(
                     size,
                     readonly_input,
                     &updates_tx,
                     &stale,
                     worker_cancelled.clone(),
+                    true,
                     |terminal, last_screen| {
+                        let reconnect = reconnecting;
+                        reconnecting = true;
+                        if reconnect {
+                            while decisions.try_recv().is_ok() {}
+                            while replies.try_recv().is_ok() {}
+                        }
                         ssh::run(
-                            connection,
-                            size,
-                            input_rx,
+                            connection.clone(),
+                            terminal.size(),
+                            input_rx.clone(),
                             &updates_tx,
                             &stale,
-                            decisions,
-                            replies,
-                            worker_cancelled,
+                            decisions.clone(),
+                            replies.clone(),
+                            worker_cancelled.clone(),
                             last_screen,
                             terminal,
+                            reconnect,
                         )
                     },
                 );
@@ -234,6 +252,13 @@ impl Session {
         let (tx, rx) = async_channel::bounded(1);
         self.send(Input::Copy(tx))?;
         Ok(rx)
+    }
+    pub fn reconnect(&self) -> Result<()> {
+        ensure!(
+            self.host_decisions.is_some(),
+            "Reconnect is only available for SSH sessions"
+        );
+        self.send(Input::Reconnect)
     }
     pub fn send(&self, input: Input) -> Result<()> {
         if let Input::Text(text) | Input::Paste(text) = &input {
@@ -429,6 +454,7 @@ fn run_local(
                 Input::Text(text) => text.into_bytes(),
                 Input::Paste(text) => terminal.encode_paste(&text),
                 Input::Key(key, modifiers) => terminal.encode_key(key, modifiers)?,
+                Input::Mouse(event) => terminal.encode_mouse(event)?,
                 Input::Resize(new_size) => {
                     if new_size != size {
                         // Resize the parser first so output from the newly sized PTY is interpreted correctly.
@@ -449,7 +475,7 @@ fn run_local(
                     dirty = true;
                     continue;
                 }
-                Input::Select(_) | Input::Copy(_) => continue,
+                Input::Select(_) | Input::Copy(_) | Input::Reconnect => continue,
             };
             if !bytes.is_empty() {
                 pending_bytes += bytes.len();
@@ -550,6 +576,7 @@ fn handle_view_input(input: &Input, terminal: &mut Terminal) -> Result<Option<bo
             let _ = reply.try_send(terminal.copy_selection().map_err(|error| error.to_string()));
             Ok(Some(false))
         }
+        Input::Reconnect => Ok(Some(false)),
         _ => Ok(None),
     }
 }
@@ -560,7 +587,8 @@ fn terminal_worker(
     updates: &Sender<Update>,
     stale: &Receiver<Update>,
     cancelled: Arc<AtomicBool>,
-    run: impl FnOnce(&mut Terminal, &mut Option<Arc<Snapshot>>) -> Result<State>,
+    reconnectable: bool,
+    mut run: impl FnMut(&mut Terminal, &mut Option<Arc<Snapshot>>) -> Result<State>,
 ) {
     let mut terminal = match Terminal::new(size) {
         Ok(terminal) => terminal,
@@ -577,40 +605,11 @@ fn terminal_worker(
         }
     };
     let mut last_screen = None;
-    let mut state = match run(&mut terminal, &mut last_screen) {
-        Ok(state) => state,
-        Err(error) => State::Failed(format!("{error:#}")),
-    };
-    if let Ok(snapshot) = terminal.snapshot() {
-        last_screen = Some(Arc::new(snapshot));
-    }
-    publish(
-        updates,
-        stale,
-        Update {
-            screen: last_screen.clone(),
-            state: state.clone(),
-        },
-    );
-    // Keep the owning parser alive for selection, scrolling, and copying after
-    // exit/disconnection. Closing the input channel wakes this blocking receive.
-    while !cancelled.load(Ordering::Acquire) {
-        let Ok(event) = input.recv_blocking() else {
-            break;
+    'connection: loop {
+        let mut state = match run(&mut terminal, &mut last_screen) {
+            Ok(state) => state,
+            Err(error) => State::Failed(format!("{error:#}")),
         };
-        let changed = match &event {
-            Input::Scroll(delta) => {
-                terminal.scroll(*delta);
-                Ok(true)
-            }
-            Input::Resize(size) => terminal.resize(*size).map(|_| true),
-            _ => handle_view_input(&event, &mut terminal).map(|changed| changed.unwrap_or(false)),
-        };
-        match changed {
-            Ok(false) => continue,
-            Ok(true) => {}
-            Err(error) => state = State::Failed(format!("{error:#}")),
-        }
         if let Ok(snapshot) = terminal.snapshot() {
             last_screen = Some(Arc::new(snapshot));
         }
@@ -622,6 +621,46 @@ fn terminal_worker(
                 state: state.clone(),
             },
         );
+        // Keep the owning parser alive for selection, scrolling, and copying after
+        // exit/disconnection. Closing the input channel wakes this blocking receive.
+        while !cancelled.load(Ordering::Acquire) {
+            let Ok(event) = input.recv_blocking() else {
+                break;
+            };
+            if matches!(event, Input::Reconnect)
+                && reconnectable
+                && !cancelled.load(Ordering::Acquire)
+            {
+                continue 'connection;
+            }
+            let changed = match &event {
+                Input::Scroll(delta) => {
+                    terminal.scroll(*delta);
+                    Ok(true)
+                }
+                Input::Resize(size) => terminal.resize(*size).map(|_| true),
+                _ => {
+                    handle_view_input(&event, &mut terminal).map(|changed| changed.unwrap_or(false))
+                }
+            };
+            match changed {
+                Ok(false) => continue,
+                Ok(true) => {}
+                Err(error) => state = State::Failed(format!("{error:#}")),
+            }
+            if let Ok(snapshot) = terminal.snapshot() {
+                last_screen = Some(Arc::new(snapshot));
+            }
+            publish(
+                updates,
+                stale,
+                Update {
+                    screen: last_screen.clone(),
+                    state: state.clone(),
+                },
+            );
+        }
+        break;
     }
 }
 

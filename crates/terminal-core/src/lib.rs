@@ -65,6 +65,38 @@ pub struct Snapshot {
     pub selection: Vec<Option<Range<usize>>>,
     /// Also true when the entire selection is outside the visible viewport.
     pub has_selection: bool,
+    pub mouse_tracking: bool,
+    pub alternate_screen: bool,
+    pub alternate_scroll: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum MouseButton {
+    Left = 1,
+    Right = 2,
+    Middle = 3,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum MouseKind {
+    Press(MouseButton),
+    Release(MouseButton),
+    Move(Option<MouseButton>),
+    /// Positive values scroll right/down, negative values left/up.
+    Scroll {
+        horizontal: i16,
+        vertical: i16,
+    },
+}
+#[derive(Clone, Copy, Debug)]
+pub struct MouseInput {
+    pub kind: MouseKind,
+    /// Fractional cell coordinates relative to the terminal text area.
+    pub x: f64,
+    pub y: f64,
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub modifiers: Modifiers,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -235,9 +267,13 @@ impl Terminal {
             cursor: Cursor::default(),
             selection: vec![None; self.size.rows as usize],
             has_selection: false,
+            mouse_tracking: false,
+            alternate_screen: false,
+            alternate_scroll: false,
         };
         let mut cursor = sys::RawCursor::default();
         let mut has_selection = false;
+        let mut modes = 0;
         unsafe extern "C" fn selected(context: *mut c_void, row: u16, start: u16, end: u16) {
             // SAFETY: synchronous callback with the same owned snapshot context.
             let snapshot = unsafe { &mut *context.cast::<Snapshot>() };
@@ -286,6 +322,7 @@ impl Terminal {
                 (&mut snapshot as *mut Snapshot).cast(),
                 &mut cursor,
                 &mut has_selection,
+                &mut modes,
             )
         })?;
         snapshot.cursor = Cursor {
@@ -296,7 +333,112 @@ impl Terminal {
             color: cursor.color,
         };
         snapshot.has_selection = has_selection;
+        snapshot.mouse_tracking = modes & 1 != 0;
+        snapshot.alternate_screen = modes & 2 != 0;
+        snapshot.alternate_scroll = modes & 4 != 0;
         Ok(snapshot)
+    }
+    pub fn size(&self) -> GridSize {
+        self.size
+    }
+    pub fn encode_mouse(&mut self, event: MouseInput) -> Result<Vec<u8>> {
+        ensure!(
+            event.x.is_finite()
+                && event.y.is_finite()
+                && (1..=1000).contains(&event.cell_width)
+                && (1..=1000).contains(&event.cell_height),
+            "Invalid terminal mouse geometry"
+        );
+        let mut output = Vec::new();
+        let mut encode = |action, button| -> Result<()> {
+            let raw = sys::RawMouse {
+                x: event.x.clamp(0., self.size.columns as f64 - 0.001),
+                y: event.y.clamp(0., self.size.rows as f64 - 0.001),
+                cell_width: event.cell_width,
+                cell_height: event.cell_height,
+                mods: event.modifiers.bits(),
+                action,
+                button,
+            };
+            let mut bytes = [0; 128];
+            let mut written = 0;
+            // SAFETY: checked geometry and an exclusive native encoder; fixed output capacity.
+            check(unsafe {
+                sys::gl_terminal_mouse(
+                    self.raw.as_ptr(),
+                    &raw,
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                    &mut written,
+                )
+            })?;
+            ensure!(written <= bytes.len(), "Invalid mouse encoding length");
+            output.extend_from_slice(&bytes[..written]);
+            Ok(())
+        };
+        match event.kind {
+            MouseKind::Press(button) => encode(0, button as u8)?,
+            MouseKind::Release(button) => encode(1, button as u8)?,
+            MouseKind::Move(button) => encode(2, button.map_or(0, |b| b as u8))?,
+            MouseKind::Scroll {
+                horizontal,
+                vertical,
+            } => {
+                for (delta, negative, positive) in [(vertical, 4, 5), (horizontal, 6, 7)] {
+                    for _ in 0..delta.unsigned_abs().min(32) {
+                        encode(0, if delta < 0 { negative } else { positive })?;
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+    fn archive(&mut self) -> Result<Vec<u8>> {
+        let mut written = 0;
+        // SAFETY: synchronous size query against the exclusively owned terminal.
+        check(unsafe {
+            sys::gl_terminal_archive(self.raw.as_ptr(), std::ptr::null_mut(), 0, &mut written)
+        })?;
+        ensure!(
+            written <= 64 * 1024 * 1024,
+            "Terminal history exceeds the 64 MiB reconnect limit"
+        );
+        if written == 0 {
+            return Ok(Vec::new());
+        }
+        let mut bytes = vec![0; written];
+        // SAFETY: no mutations since the size query; output capacity matches allocation.
+        check(unsafe {
+            sys::gl_terminal_archive(
+                self.raw.as_ptr(),
+                bytes.as_mut_ptr(),
+                bytes.len(),
+                &mut written,
+            )
+        })?;
+        ensure!(written <= bytes.len(), "Invalid terminal archive length");
+        bytes.truncate(written);
+        Ok(bytes)
+    }
+    /// Start a clean protocol/parser state, retaining styled output in scrollback.
+    pub fn prepare_reconnect(&mut self) -> Result<()> {
+        let mut fresh = Self::new(self.size)?;
+        let alternate = self.snapshot()?.alternate_screen;
+        let active = self.archive()?;
+        if alternate {
+            self.feed(b"\x1b[?1049l");
+            fresh.feed(&self.archive()?);
+            fresh.feed(b"\r\n\x1b[0m--- Previous remote screen ---\r\n");
+        }
+        fresh.feed(&active);
+        fresh.feed(b"\r\n\x1b[0m--- Reconnected ---\r\n");
+        // Protect previous output from the new application's initial screen clear.
+        for _ in 0..self.size.rows {
+            fresh.feed(b"\r\n");
+        }
+        fresh.feed(b"\x1b[H");
+        *self = fresh;
+        Ok(())
     }
     pub fn encode_key(&mut self, key: Key, modifiers: Modifiers) -> Result<Vec<u8>> {
         let mut bytes = vec![0; 256];
@@ -612,5 +754,136 @@ mod tests {
         assert!(GridSize::new(0, 24).is_err());
         assert!(GridSize::new(80, 0).is_err());
         assert!(GridSize::new(1001, 24).is_err());
+    }
+    fn mouse(kind: MouseKind) -> MouseInput {
+        MouseInput {
+            kind,
+            x: 2.2,
+            y: 3.8,
+            cell_width: 9,
+            cell_height: 22,
+            modifiers: Modifiers::default(),
+        }
+    }
+    #[test]
+    fn mouse_protocols_track_modes_buttons_motion_modifiers_and_wheels() {
+        let mut terminal = terminal(300, 40);
+        assert!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Press(MouseButton::Left)))
+                .unwrap()
+                .is_empty()
+        );
+        terminal.feed(b"\x1b[?1000h\x1b[?1006h");
+        assert!(terminal.snapshot().unwrap().mouse_tracking);
+        let mut press = mouse(MouseKind::Press(MouseButton::Left));
+        press.modifiers.control = true;
+        assert_eq!(terminal.encode_mouse(press).unwrap(), b"\x1b[<16;3;4M");
+        assert_eq!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Release(MouseButton::Left)))
+                .unwrap(),
+            b"\x1b[<0;3;4m"
+        );
+        assert!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Move(None)))
+                .unwrap()
+                .is_empty()
+        );
+        terminal.feed(b"\x1b[?1002h");
+        let moved = mouse(MouseKind::Move(Some(MouseButton::Left)));
+        assert_eq!(terminal.encode_mouse(moved).unwrap(), b"\x1b[<32;3;4M");
+        assert!(terminal.encode_mouse(moved).unwrap().is_empty());
+        terminal.feed(b"\x1b[?1003h");
+        let mut hover = mouse(MouseKind::Move(None));
+        hover.x = 4.2;
+        assert_eq!(terminal.encode_mouse(hover).unwrap(), b"\x1b[<35;5;4M");
+        assert_eq!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Scroll {
+                    horizontal: 1,
+                    vertical: -1
+                }))
+                .unwrap(),
+            b"\x1b[<64;3;4M\x1b[<67;3;4M"
+        );
+        terminal.feed(b"\x1b[?1006l\x1b[?1003l\x1b[?1000h");
+        assert_eq!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Press(MouseButton::Right)))
+                .unwrap(),
+            b"\x1b[M\x22\x23\x24"
+        );
+        terminal.feed(b"\x1b[?1005h");
+        let mut distant = mouse(MouseKind::Press(MouseButton::Left));
+        distant.x = 260.;
+        assert_eq!(
+            terminal.encode_mouse(distant).unwrap(),
+            "\x1b[M \u{125}$".as_bytes()
+        );
+        terminal.feed(b"\x1b[?1005l\x1b[?1015h");
+        assert_eq!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Press(MouseButton::Middle)))
+                .unwrap(),
+            b"\x1b[33;3;4M"
+        );
+        terminal.feed(b"\x1b[?1015l\x1b[?1016h");
+        assert_eq!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Press(MouseButton::Left)))
+                .unwrap(),
+            b"\x1b[<0;20;84M"
+        );
+    }
+    #[test]
+    fn alternate_screen_wheel_falls_back_to_application_cursor_keys() {
+        let mut terminal = terminal(80, 24);
+        terminal.feed(b"\x1b[?1049h\x1b[?1007h\x1b[?1h");
+        assert!(terminal.snapshot().unwrap().alternate_screen);
+        assert_eq!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Scroll {
+                    horizontal: 0,
+                    vertical: -2
+                }))
+                .unwrap(),
+            b"\x1bOA\x1bOA"
+        );
+        terminal.feed(b"\x1b[?1007l");
+        assert!(
+            terminal
+                .encode_mouse(mouse(MouseKind::Scroll {
+                    horizontal: 0,
+                    vertical: 1
+                }))
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn reconnect_retains_styled_history_and_resets_parser_and_application_modes() {
+        let mut terminal = terminal(30, 5);
+        terminal.feed(b"\x1b[31mOLD SHELL\x1b[0m\r\n\x1b[?1049hFULL SCREEN\x1b[?1003h\x1b[?1006h\x1b[?1h\x1b[?2004h\x1b]unfinished title");
+        terminal.prepare_reconnect().unwrap();
+        terminal.feed(b"\x1b[2J\x1b[HNEW SHELL");
+        assert!(terminal.snapshot().unwrap().text().contains("NEW SHELL"));
+        assert!(!terminal.snapshot().unwrap().mouse_tracking);
+        assert_eq!(
+            terminal.encode_key(Key::Up, Modifiers::default()).unwrap(),
+            b"\x1b[A"
+        );
+        assert_eq!(terminal.encode_paste("paste"), b"paste");
+        terminal.scroll(-10000);
+        let old = terminal.snapshot().unwrap();
+        assert!(old.text().contains("OLD SHELL"), "{}", old.text());
+        assert_ne!(old.cell(0, 0).unwrap().foreground, 0xdce3df);
+        let mut history = String::new();
+        for _ in 0..10 {
+            history.push_str(&terminal.snapshot().unwrap().text());
+            terminal.scroll(1);
+        }
+        assert!(history.contains("FULL SCREEN"), "{history}");
     }
 }

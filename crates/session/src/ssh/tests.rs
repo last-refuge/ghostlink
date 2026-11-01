@@ -195,6 +195,11 @@ impl server::Handler for TestServer {
         let _ = self.events.send(Observed::Bytes(bytes.to_vec()));
         if bytes.starts_with(b"latency-") {
             session.data(channel, bytes.to_vec())?;
+        } else if bytes == b"disconnect\r" {
+            session.data(channel, b"BEFORE DISCONNECT\r\n".as_slice())?;
+            session.disconnect(russh::Disconnect::ByApplication, "fixture disconnect", "")?;
+        } else if bytes == b"mouse\r" {
+            session.data(channel, b"\x1b[?1002h\x1b[?1006hMOUSE READY\r\n".as_slice())?;
         } else if bytes == b"finish\r" {
             // Closing immediately after sending bytes must not lose the final frame.
             session.data(channel, b"FINAL OUTPUT\r\n".as_slice())?;
@@ -211,6 +216,124 @@ impl server::Handler for TestServer {
         }
         Ok(())
     }
+}
+#[test]
+fn mouse_events_reach_the_remote_application_without_scrolling_the_viewport() {
+    let fixture = Fixture::new();
+    fixture.trust();
+    let session = Session::ssh(fixture.profile(), GridSize::default()).unwrap();
+    wait(&session, |u| u.state == State::Running);
+    session.send(Input::Text("mouse\r".into())).unwrap();
+    wait(&session, |u| {
+        u.screen.as_ref().is_some_and(|s| s.mouse_tracking)
+    });
+    let event = terminal_core::MouseInput {
+        kind: terminal_core::MouseKind::Press(terminal_core::MouseButton::Left),
+        x: 2.5,
+        y: 3.5,
+        cell_width: 9,
+        cell_height: 22,
+        modifiers: Modifiers::default(),
+    };
+    session.send(Input::Mouse(event)).unwrap();
+    fixture.observed(|e| matches!(e,Observed::Bytes(b) if b==b"\x1b[<0;3;4M"));
+    session
+        .send(Input::Mouse(terminal_core::MouseInput {
+            kind: terminal_core::MouseKind::Scroll {
+                horizontal: 0,
+                vertical: -2,
+            },
+            ..event
+        }))
+        .unwrap();
+    fixture.observed(|e| matches!(e,Observed::Bytes(b) if b==b"\x1b[<64;3;4M\x1b[<64;3;4M"));
+}
+#[test]
+fn reconnect_replaces_a_dead_shared_transport_once_and_keeps_history_and_size() {
+    let fixture = Fixture::with_startup(
+        keys::Algorithm::Ed25519,
+        false,
+        StartupBehavior::Interleaved,
+    );
+    fixture.trust();
+    let shared = SshConnection::new(fixture.profile()).unwrap();
+    let first = Session::ssh_in(shared.clone(), GridSize::default()).unwrap();
+    let second = Session::ssh_in(shared, GridSize::default()).unwrap();
+    wait(&first, |u| u.state == State::Running);
+    wait(&second, |u| u.state == State::Running);
+    first.send(Input::Text("roundtrip\r".into())).unwrap();
+    wait(&first, |u| {
+        u.screen
+            .as_ref()
+            .is_some_and(|s| s.text().contains("ECHO ROUNDTRIP"))
+    });
+    first.send(Input::Text("disconnect\r".into())).unwrap();
+    wait(&first, |u| matches!(u.state, State::Disconnected(_)));
+    wait(&second, |u| matches!(u.state, State::Disconnected(_)));
+    first
+        .send(Input::Resize(GridSize::new(92, 28).unwrap()))
+        .unwrap();
+    first.reconnect().unwrap();
+    second.reconnect().unwrap();
+    let recovered = wait(&first, |u| u.state == State::Running);
+    wait(&second, |u| u.state == State::Running);
+    assert_eq!(fixture.authentications.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        recovered.screen.unwrap().size,
+        GridSize::new(92, 28).unwrap()
+    );
+    first.send(Input::Scroll(-10000)).unwrap();
+    wait(&first, |u| {
+        u.screen
+            .as_ref()
+            .is_some_and(|s| s.text().contains("ECHO ROUNDTRIP"))
+    });
+    second.send(Input::Text("roundtrip\r".into())).unwrap();
+    wait(&second, |u| {
+        u.screen
+            .as_ref()
+            .is_some_and(|s| s.text().contains("ECHO ROUNDTRIP"))
+    });
+}
+#[test]
+fn reconnect_after_shell_exit_reuses_authentication_and_changed_keys_still_block() {
+    let fixture = Fixture::with_startup(
+        keys::Algorithm::Ed25519,
+        false,
+        StartupBehavior::Interleaved,
+    );
+    fixture.trust();
+    let profile = fixture.profile();
+    let session = Session::ssh(profile.clone(), GridSize::default()).unwrap();
+    wait(&session, |u| u.state == State::Running);
+    session.send(Input::Text("finish\r".into())).unwrap();
+    wait(&session, |u| u.state == State::Exited(23));
+    session.reconnect().unwrap();
+    wait(&session, |u| u.state == State::Running);
+    assert_eq!(fixture.authentications.load(Ordering::SeqCst), 1);
+    session.send(Input::Text("disconnect\r".into())).unwrap();
+    wait(&session, |u| matches!(u.state, State::Disconnected(_)));
+    fs::write(
+        &profile.known_hosts,
+        format!(
+            "{} {}\n",
+            endpoint(&profile.host, profile.port),
+            fixture.user_key.public_key().to_openssh().unwrap()
+        ),
+    )
+    .unwrap();
+    session.reconnect().unwrap();
+    wait(
+        &session,
+        |u| matches!(&u.state,State::Failed(error) if error.contains("HOST KEY CHANGED")),
+    );
+    assert_eq!(fixture.authentications.load(Ordering::SeqCst), 1);
+    session.send(Input::Scroll(-10000)).unwrap();
+    wait(&session, |u| {
+        u.screen
+            .as_ref()
+            .is_some_and(|s| s.text().contains("FINAL OUTPUT"))
+    });
 }
 struct Fixture {
     port: u16,

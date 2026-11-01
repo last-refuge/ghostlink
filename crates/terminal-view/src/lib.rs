@@ -1,6 +1,7 @@
 //! GPUI terminal rendering and interaction.
 
 mod field;
+mod mouse;
 mod perf;
 mod render_cache;
 mod selection;
@@ -19,6 +20,8 @@ const PADDING: f32 = 16.0;
 
 pub enum TerminalEvent {
     AuthenticationRequired,
+    StateChanged,
+    Reconnecting,
 }
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
@@ -40,6 +43,8 @@ pub struct TerminalView {
     drag_moved: bool,
     autoscroll: Option<Task<()>>,
     drag_observers: Vec<Subscription>,
+    mouse_capture: Option<(MouseButton, Point<Pixels>, Modifiers)>,
+    wheel_remainder: Point<f32>,
     composition: String,
     composition_selection: Range<usize>,
     credential: Option<(u64, Entity<Field>)>,
@@ -95,9 +100,50 @@ impl TerminalView {
     }
     /// Stop transport work immediately, even if GPUI retains an old frame's entity.
     pub fn close(&mut self) {
+        self.mouse_capture = None;
         self.cancel_drag();
         self.session = None;
         self.credential = None;
+    }
+    pub fn is_disconnected(&self) -> bool {
+        matches!(self.state, State::Disconnected(_))
+    }
+    pub fn is_running(&self) -> bool {
+        self.state == State::Running
+    }
+    pub fn can_reconnect(&self) -> bool {
+        self.remote
+            && self.session.is_some()
+            && matches!(
+                self.state,
+                State::Exited(_) | State::Failed(_) | State::Disconnected(_)
+            )
+    }
+    pub fn reconnect(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.can_reconnect() {
+            return false;
+        }
+        if let Some(session) = &self.session
+            && let Err(error) = session.reconnect()
+        {
+            self.error = Some(error.to_string());
+            cx.notify();
+            return false;
+        }
+        self.mouse_capture = None;
+        self.cancel_drag();
+        self.composition.clear();
+        self.composition_selection = 0..0;
+        self.error = None;
+        self.state = State::Connecting;
+        cx.emit(TerminalEvent::StateChanged);
+        cx.notify();
+        true
+    }
+    fn request_reconnect(&mut self, cx: &mut Context<Self>) {
+        if self.reconnect(cx) {
+            cx.emit(TerminalEvent::Reconnecting);
+        }
     }
     fn from_session(
         result: anyhow::Result<Session>,
@@ -133,7 +179,17 @@ impl TerminalView {
                                     this.credential = None;
                                     this.focus_credential = false;
                                 }
+                                let changed = this.state != update.state;
+                                if changed && update.state != State::Running {
+                                    this.pointer_end(cx);
+                                }
                                 this.state = update.state;
+                                if changed && this.state == State::Running {
+                                    this.error = None;
+                                }
+                                if changed {
+                                    cx.emit(TerminalEvent::StateChanged);
+                                }
                                 if authentication_required {
                                     cx.emit(TerminalEvent::AuthenticationRequired);
                                 }
@@ -171,6 +227,8 @@ impl TerminalView {
             drag_moved: false,
             autoscroll: None,
             drag_observers: Vec::new(),
+            mouse_capture: None,
+            wheel_remainder: point(0., 0.),
             composition: String::new(),
             composition_selection: 0..0,
             credential: None,
@@ -183,7 +241,14 @@ impl TerminalView {
             && self.state != State::Running
             && matches!(input, Input::Text(_) | Input::Paste(_) | Input::Key(_, _))
         {
-            self.error = Some("Wait for the SSH connection to finish before typing".into());
+            self.error = Some(
+                if self.can_reconnect() {
+                    "Reconnect to continue working"
+                } else {
+                    "Wait for the SSH connection to finish before typing"
+                }
+                .into(),
+            );
             cx.notify();
             return;
         }
@@ -210,6 +275,12 @@ impl TerminalView {
         }
         let keystroke = &event.keystroke;
         let mods = &keystroke.modifiers;
+        if mods.control && mods.shift && keystroke.key == "r" && self.remote {
+            self.request_reconnect(cx);
+            window.prevent_default();
+            cx.stop_propagation();
+            return;
+        }
         if mods.control && mods.shift && keystroke.key == "c" {
             self.copy(cx);
             window.prevent_default();
@@ -326,7 +397,8 @@ impl Render for TerminalView {
             State::AwaitingCredential(_) => "Authentication required".into(),
             State::Running => "Connected".into(),
             State::Exited(code) => format!("Shell exited ({code})"),
-            State::Failed(error) => error.clone(),
+            State::Failed(_) => "Connection failed".into(),
+            State::Disconnected(_) => "Disconnected".into(),
         };
         let entity = cx.entity();
         let paint_entity = entity.clone();
@@ -338,10 +410,10 @@ impl Render for TerminalView {
         } else {
             None
         };
-        let connection_error = if let State::Failed(error) = &self.state {
-            Some(error.clone())
-        } else {
-            None
+        let connection_error = match &self.state {
+            State::Failed(error) | State::Disconnected(error) => Some(error.clone()),
+            State::Exited(code) if self.remote => Some(format!("Remote shell exited ({code})")),
+            _ => None,
         };
         let credential_prompt = if let State::AwaitingCredential(prompt) = &self.state {
             self.credential
@@ -528,9 +600,30 @@ impl Render for TerminalView {
                     div()
                         .p_4()
                         .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_3()
                         .bg(rgb(0x28251e))
                         .text_color(rgb(0xd7b77d))
-                        .child(error),
+                        .child(div().flex_1().min_w_0().child(error))
+                        .when(self.can_reconnect(), |bar| {
+                            bar.child(
+                                div()
+                                    .id("reconnect")
+                                    .debug_selector(|| "reconnect".into())
+                                    .flex_none()
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(0x334c43))
+                                    .text_color(rgb(0xdce3df))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.request_reconnect(cx)),
+                                    )
+                                    .child("Reconnect · Ctrl Shift R"),
+                            )
+                        }),
                 )
             })
             .child(
@@ -538,20 +631,22 @@ impl Render for TerminalView {
                     .id("terminal-canvas")
                     .flex_1()
                     .min_h_0()
-                    .cursor(CursorStyle::IBeam)
+                    .cursor(if self.screen.as_ref().is_some_and(|s| s.mouse_tracking) {
+                        CursorStyle::Arrow
+                    } else {
+                        CursorStyle::IBeam
+                    })
                     .overflow_hidden()
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            this.selection_begin(event, window, cx);
+                            this.pointer_down(event, window, cx);
                         }),
                     )
+                    .on_mouse_down(MouseButton::Middle, cx.listener(Self::pointer_down))
+                    .on_mouse_down(MouseButton::Right, cx.listener(Self::pointer_down))
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                        let delta =
-                            f32::from(event.delta.pixel_delta(px(LINE_HEIGHT)).y) / LINE_HEIGHT;
-                        if delta.abs() >= 0.1 {
-                            this.selection_scroll((-delta * 3.).round() as i32, cx);
-                        }
+                        this.pointer_scroll(event, cx)
                     }))
                     .child(
                         canvas(
@@ -678,7 +773,9 @@ impl Render for TerminalView {
                     .items_center()
                     .text_xs()
                     .text_color(rgb(
-                        if matches!(self.state, State::Failed(_)) || self.error.is_some() {
+                        if matches!(self.state, State::Failed(_) | State::Disconnected(_))
+                            || self.error.is_some()
+                        {
                             0xd7b77d
                         } else {
                             0x8e9b9e

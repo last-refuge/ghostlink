@@ -8,6 +8,17 @@ pub struct RawTerminal {
 }
 
 #[repr(C)]
+pub struct RawMouse {
+    pub x: f64,
+    pub y: f64,
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub mods: u32,
+    pub action: u8,
+    pub button: u8,
+}
+
+#[repr(C)]
 pub struct RawCell {
     pub codepoints: *const u32,
     pub len: usize,
@@ -49,6 +60,20 @@ unsafe extern "C" {
         context: *mut c_void,
         cursor: *mut RawCursor,
         has_selection: *mut bool,
+        modes: *mut u8,
+    ) -> c_int;
+    pub fn gl_terminal_mouse(
+        terminal: *mut RawTerminal,
+        event: *const RawMouse,
+        output: *mut u8,
+        capacity: usize,
+        written: *mut usize,
+    ) -> c_int;
+    pub fn gl_terminal_archive(
+        terminal: *mut RawTerminal,
+        output: *mut u8,
+        capacity: usize,
+        written: *mut usize,
     ) -> c_int;
     pub fn gl_terminal_key(
         terminal: *mut RawTerminal,
