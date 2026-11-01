@@ -49,10 +49,13 @@ Install rustup, Git, full Xcode with its macOS/Metal components, and CMake. Xcod
 ```bash
 xcrun --find clang
 xcrun --find metal
+xcrun metal --version
 bash scripts/bootstrap.sh
 bash scripts/dev.sh run
 bash scripts/package.sh
 ```
+
+If `metal --version` reports a missing Metal Toolchain, install the component with `xcodebuild -downloadComponent MetalToolchain`, then retry. `xcrun --find metal` alone can succeed even when this component is missing.
 
 The helpers build for the running architecture: Apple Silicon produces `aarch64-apple-darwin`; Intel produces `x86_64-apple-darwin`. Use native runners for each architecture. The deployment target defaults to macOS 12.0 and can be set with `MACOSX_DEPLOYMENT_TARGET` before **both** bootstrap and Cargo builds. Older macOS versions still need native runtime verification.
 

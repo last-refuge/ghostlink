@@ -4,6 +4,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 cd "$ghostlink_root"
 
 command -v cargo >/dev/null || ghostlink_fail 'Install Rust using rustup first. See README.md.'
+if [[ "$ghostlink_os" == macos && "${1:-run}" != fmt ]]; then
+    xcrun metal --version >/dev/null 2>&1 || ghostlink_fail \
+        'The Xcode Metal compiler is unavailable. Select full Xcode, then run: xcodebuild -downloadComponent MetalToolchain. See docs/building.md.'
+fi
 version="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)"
 toolchain="+$version"
 if rustup toolchain list | grep -q "^stable-$ghostlink_target"; then

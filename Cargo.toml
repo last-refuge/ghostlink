@@ -32,3 +32,9 @@ dirs = "=5.0.1"
 
 [profile.dev]
 debug = 1
+
+# Rust 1.93's stripping can misalign Mach-O proc-macro libraries, which
+# macOS 27 refuses to load (rust-lang/rust#157750). These are build tools,
+# not shipped application artifacts.
+[profile.release.build-override]
+strip = "none"
