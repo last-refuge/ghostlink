@@ -3,18 +3,22 @@ name: Windows
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: windows-2022
-    timeout-minutes: 30
+    runs-on: windows-2025
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Install pinned Rust
+        shell: pwsh
+        run: rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
       - name: Build pinned libghostty-vt
         shell: pwsh
         run: ./scripts/bootstrap.ps1
@@ -27,6 +31,17 @@ jobs:
       - name: Test
         shell: pwsh
         run: ./scripts/dev.ps1 test
-      - name: Build application
+      - name: Build Windows installer and portable archive
         shell: pwsh
-        run: ./scripts/dev.ps1 build
+        run: ./scripts/package-windows.ps1
+      - name: Test install, upgrade, and uninstall
+        shell: pwsh
+        run: ./scripts/test-windows-installer.ps1 -SkipLaunch
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ghostlink-windows-x86_64
+          path: |
+            dist/ghostlink-*-windows-x86_64-setup.exe
+            dist/ghostlink-*-windows-x86_64.zip
+          if-no-files-found: error
+          compression-level: 0

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Ghostlink
+Comment=SSH sessions, tabs, and split terminals
+Exec=ghostlink
+TryExec=ghostlink
+Icon=ghostlink
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=SSH;Terminal;Remote;
+StartupNotify=true
+StartupWMClass=io.github.last-refuge.ghostlink

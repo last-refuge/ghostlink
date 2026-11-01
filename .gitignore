@@ -1,4 +1,9 @@
 /target/
 /.deps/
 /.tools/
+/dist/
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/*.pkg.tar.*
+/vendor/xattr/Cargo.lock
 *.log

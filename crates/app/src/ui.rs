@@ -13,7 +13,7 @@ impl Render for Hint {
             .border_color(rgb(0x3a4549))
             .bg(rgb(0x222b2e))
             .text_color(rgb(0xdce3df))
-            .font_family("Segoe UI")
+            .font_family(ghostlink_platform::UI_FONT)
             .text_xs()
             .line_height(px(16.))
             .whitespace_nowrap()

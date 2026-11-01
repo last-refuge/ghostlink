@@ -632,16 +632,88 @@ fn automatic_uses_a_configured_identity_and_missing_agent_is_nonfatal() {
     fixture.write_identity("custom key", None);
     // Replace the explicit disabled agent with a guaranteed absent endpoint.
     let config = fixture.directory.path().join(".ssh/config");
+    let absent = if cfg!(windows) {
+        format!(r"\\.\pipe\ghostlink-absent-{}", rand::random::<u64>())
+    } else {
+        fixture
+            .directory
+            .path()
+            .join("absent-agent.sock")
+            .to_string_lossy()
+            .into_owned()
+    };
+    let text = fs::read_to_string(&config)
+        .unwrap()
+        .replace("IdentityAgent none", &format!("IdentityAgent \"{absent}\""));
+    fs::write(config, text).unwrap();
+    let session = Session::ssh(profile, GridSize::default()).unwrap();
+    wait(&session, |u| u.state == State::Running);
+}
+#[cfg(unix)]
+#[test]
+fn automatic_authenticates_with_a_private_unix_agent_without_key_files() {
+    use std::{
+        os::unix::fs::PermissionsExt,
+        process::{Child, Command, Stdio},
+    };
+    struct Agent(Child);
+    impl Drop for Agent {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    // Keep the socket path short enough for macOS's Unix-domain socket limit.
+    let directory = tempfile::Builder::new()
+        .prefix("gl-agent-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let socket = directory.path().join("agent.sock");
+    let mut agent = Agent(
+        Command::new("ssh-agent")
+            .args(["-D", "-a"])
+            .arg(&socket)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Install OpenSSH client tools for Unix agent tests"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !socket.exists() {
+        assert!(
+            agent.0.try_wait().unwrap().is_none(),
+            "Test SSH agent exited"
+        );
+        assert!(Instant::now() < deadline, "Test SSH agent did not start");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let fixture = Fixture::new();
+    fixture.trust();
+    let profile = fixture.automatic("");
+    fixture.write_identity("id_ed25519", None);
+    let key = fixture.directory.path().join(".ssh/id_ed25519");
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    let result = Command::new("ssh-add")
+        .arg(&key)
+        .env("SSH_AUTH_SOCK", &socket)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    fs::remove_file(key).unwrap();
+    let config = fixture.directory.path().join(".ssh/config");
     let text = fs::read_to_string(&config).unwrap().replace(
         "IdentityAgent none",
-        &format!(
-            r"IdentityAgent \\.\pipe\ghostlink-absent-{}",
-            rand::random::<u64>()
-        ),
+        &format!("IdentityAgent \"{}\"", socket.display()),
     );
     fs::write(config, text).unwrap();
     let session = Session::ssh(profile, GridSize::default()).unwrap();
     wait(&session, |u| u.state == State::Running);
+    assert_eq!(fixture.authentications.load(Ordering::SeqCst), 1);
 }
 #[test]
 fn automatic_unlocks_only_a_server_accepted_encrypted_identity() {

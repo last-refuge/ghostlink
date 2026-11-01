@@ -222,7 +222,7 @@ int gl_terminal_select(GlTerminal *self, uint8_t phase, uint8_t clicks, double x
     if (scroll) gl_terminal_scroll(self, scroll);
     GhosttyPoint point = { .tag = GHOSTTY_POINT_TAG_VIEWPORT, .value.coordinate = {
         .x = x < 0 ? 0 : x >= self->columns ? self->columns - 1 : (uint16_t)x,
-        .y = y < 0 ? 0 : y >= self->height ? self->height - 1 : (uint32_t)y,
+        .y = y < 0 ? 0 : y >= self->height ? (uint32_t)self->height - 1u : (uint32_t)y,
     }};
     GhosttyGridRef ref;
     TRY(ghostty_terminal_grid_ref(self->terminal, point, &ref));

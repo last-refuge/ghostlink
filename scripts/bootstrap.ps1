@@ -52,7 +52,7 @@ if (!$SkipBuild) {
     if ($LASTEXITCODE -gt 7) { throw 'Copying native build sources failed.' }
     Push-Location $native
     try {
-        & $zig build -Demit-lib-vt -Doptimize=ReleaseFast -Dtarget=x86_64-windows-msvc --cache-dir (Join-Path $env:TEMP 'ghostlink-zig-local') --global-cache-dir (Join-Path $env:TEMP 'ghostlink-zig-cache')
+        & $zig build -Demit-lib-vt -Doptimize=ReleaseFast -Dtarget=x86_64-windows-msvc --cache-dir (Join-Path $env:TEMP 'ghostlink-zig-local') --global-cache-dir (Join-Path $env:TEMP 'ghostlink-zig-cache') --prefix (Join-Path $native 'zig-out/x86_64-pc-windows-msvc')
         if ($LASTEXITCODE -ne 0) { throw 'Building libghostty-vt failed.' }
     } finally { Pop-Location }
     & robocopy (Join-Path $native 'zig-out') (Join-Path $source 'zig-out') /E /NFL /NDL /NJH /NJS /NP

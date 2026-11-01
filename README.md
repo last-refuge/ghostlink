@@ -1,23 +1,38 @@
 # Ghostlink
 
-A Windows SSH workspace built with Rust, GPUI, and libghostty-vt.
+An SSH workspace for Windows, macOS, and Linux, built with Rust, GPUI, and libghostty-vt.
 
-The app opens a connection picker where you can search saved servers, connect, or add, edit, and delete entries. The workspace's left sidebar lists open sessions; each session owns its tabs, split layouts, and focused pane. Tabs and panes share one authenticated SSH connection and keep independent remote shells, terminal state, scrollback, and selection. The ConPTY local-shell backend is retained for later work and testing, without local launchers in the current interface.
+The app opens a connection picker where you can search saved servers, connect, or add, edit, and delete entries. The workspace's left sidebar lists open sessions; each session owns its tabs, split layouts, and focused pane. Tabs and panes share one authenticated SSH connection and keep independent remote shells, terminal state, scrollback, and selection. Local-shell backends (ConPTY on Windows, PTYs on Unix) are retained for testing and later work, without local launchers in the current interface.
 
 ## Build and run
 
-Development currently targets **Windows 11 x64**. Install Git, Rust through rustup, and Visual Studio C++ Build Tools with the Windows SDK. Run these commands in PowerShell from the repository root:
+Build natively on the destination OS. Windows targets x86_64; macOS and Linux helpers support x86_64 and aarch64. Linux builds enable both Wayland and X11, including the Arch/Omarchy workflow. Install Git, Rust through [rustup](https://rustup.rs/), and the platform prerequisites in the [build guide](docs/building.md).
+
+On **Windows 11 x64**, install Visual Studio C++ Build Tools with the Windows SDK, then run from the repository root:
 
 ```powershell
 ./scripts/bootstrap.ps1
 ./scripts/dev.ps1 run
 ```
 
-Bootstrap downloads a checksum-verified Zig compiler into `.tools`, fetches a sparse checkout of the pinned Ghostty commit into `.deps`, and builds the native libraries. It does not install Zig globally. The first run needs network access and can take several minutes; interrupted Zig downloads can be resumed by rerunning the script.
+Create the Windows installer and portable ZIP with `./scripts/package-windows.ps1`. The installer uses a per-user location, creates a Start menu shortcut, bundles the Microsoft runtime, and supports in-place upgrades. Uninstall preserves saved connections and trusted host keys. Close Ghostlink before updating or uninstalling; setup will not terminate active sessions. Current installers are unsigned development builds.
 
-Build output and Zig package extraction go to `%TEMP%` to avoid Dropbox locking temporary compiler files. Set `CARGO_TARGET_DIR` to override Rust's output location. The development executable normally lives at `%TEMP%\ghostlink-target\debug\ghostlink.exe`. libghostty-vt is linked statically; no terminal DLL needs to be copied beside the executable.
+On **macOS or Linux**, after installing the platform development libraries:
+
+```bash
+bash scripts/bootstrap.sh
+bash scripts/dev.sh run
+```
+
+Build distributable artifacts with `bash scripts/package.sh`: a macOS `.app` in a ZIP, or a Linux tarball with the executable and desktop launcher, written under `dist/`. The macOS bundle is ad-hoc signed for development; Developer ID signing and notarization are separate release work. Arch/Omarchy users can build a pacman package using `packaging/arch/PKGBUILD`. See the build guide for dependencies, installation, and source selection.
+
+Bootstrap downloads the checksum-verified **Zig 0.16.0** archive for the host into `.tools`, fetches a sparse checkout of the pinned Ghostty commit into `.deps`, and builds the native libraries. It does not install Zig globally. The first run needs network access and can take several minutes; interrupted Zig downloads can be resumed by rerunning the script. Checksums come from the [official Zig release index](https://ziglang.org/download/index.json).
+
+Build output and Zig package extraction stay outside the source tree: `%TEMP%` on Windows, `~/Library/Caches/Ghostlink/build` on macOS, and `$XDG_CACHE_HOME/ghostlink/build` (default `~/.cache/ghostlink/build`) on Linux. Set `CARGO_TARGET_DIR` to override Rust's output location. The Windows development executable normally lives at `%TEMP%\ghostlink-target\debug\ghostlink.exe`. Native terminal archives are separated by Rust target triple, so Windows and WSL can share a checkout. libghostty-vt is linked statically; no terminal DLL/shared library needs to be copied beside the executable.
 
 Rust is pinned in `rust-toolchain.toml`, direct crate versions are exact, and `Cargo.lock` pins the dependency graph. The helper reuses an installed stable compiler only if it matches the pinned Rust version exactly.
+
+GitHub Actions defines Windows checks, native macOS/Linux builds on both architectures, and an Arch package build. Windows publishes installer/portable ZIP artifacts after an isolated install/upgrade/uninstall test; Unix jobs publish native build artifacts after linting and testing. These jobs do not publish releases.
 
 ## Controls
 
@@ -44,6 +59,8 @@ Rust is pinned in `rust-toolchain.toml`, direct crate versions are exact, and `C
 | Scroll history | Mouse wheel |
 | Select / scroll history inside a mouse-enabled application | Hold `Shift` while dragging / scrolling |
 
+On macOS, use Command for workspace and connection-picker shortcuts; Control aliases remain available. `Cmd T` opens a related tab, `Cmd W` closes a pane, `Cmd N` opens the connection picker, `Cmd C` / `Cmd V` copy and paste, and `Cmd Q` quits. Tab switching remains `Ctrl Tab` / `Ctrl Shift Tab` to avoid the OS's Command-Tab shortcut.
+
 Copy joins soft-wrapped terminal rows while preserving real line breaks, Unicode, and indentation. Scrolling keeps the selection attached to its text. Selection and copy remain available after the shell exits or disconnects, until its pane is closed. Copying with no selection leaves the clipboard unchanged.
 
 Applications such as Neovim and tmux receive mouse clicks, drag/release events, motion, and vertical/horizontal scrolling when they request mouse reporting. Hold Shift for terminal text selection or history scrolling. Alternate-screen applications that request alternate scrolling receive cursor keys when mouse reporting is off.
@@ -54,7 +71,7 @@ Closing a pane terminates its remote shell. Closing a tab terminates its panes; 
 
 The connection picker opens at startup and whenever you choose **New session**. On first launch it opens **Add a connection** directly. Give it a **Connection name**, enter a server or SSH alias, then **Save**. The name is optional and defaults to the SSH destination when left blank; Add/Edit focuses the name first, and Tab moves to the destination. Select an entry and press Enter or **Connect**; double-click also connects. Search matches names and destinations, and Up/Down changes the selection. **Edit** updates the selected entry; **Delete** removes it with an **Undo** action. In the picker, `Ctrl N` adds an entry and `Ctrl E` edits the selection. Escape goes back from editing, or returns to the active terminal when sessions are open.
 
-Saved names and destinations persist at `%LOCALAPPDATA%\Ghostlink\connections.json`. Editing or deleting an entry does not interrupt open sessions. The catalog stores no authentication settings or credentials. Updates are atomic and serialized across app windows; an unreadable or unsupported file is reported without overwriting it.
+Saved names and destinations persist in `connections.json` under the app data directory: `%LOCALAPPDATA%\Ghostlink` on Windows, `~/Library/Application Support/Ghostlink` on macOS, and `$XDG_DATA_HOME/ghostlink` (default `~/.local/share/ghostlink`) on Linux. Editing or deleting an entry does not interrupt open sessions. The catalog stores no authentication settings or credentials. Updates are atomic and serialized across app windows; an unreadable or unsupported file is reported without overwriting it.
 
 The destination accepts `server`, `user@server`, `user@server:2222`, and bracketed IPv6 addresses. Ghostlink resolves the username, port, and identities from your SSH config, then tries available keys automatically. Passphrases, passwords, and keyboard-interactive challenges appear only when needed. Secrets are masked when appropriate and are never saved to settings, workspace files, or logs.
 
@@ -62,11 +79,11 @@ Connecting adds a session to the sidebar using its saved name, with its first ta
 
 Disconnected panes and their sidebar session show their status. Choose **Reconnect** or press `Ctrl Shift R` in a disconnected pane. That pane authenticates first; other panes disconnected from the session then reuse the recovered connection. Tabs, split layouts, zoom, focus, and each pane's previous output are retained. An intentionally exited shell can also be reopened in place. Previous styled output remains in scrollback, including the last full-screen application display; fresh terminal modes prevent an interrupted application from affecting the new shell. Reconnecting creates fresh remote shells. Use tmux when remote processes need to survive a disconnect.
 
-An unknown server presents its algorithm and SHA-256 fingerprint **before authentication**. Verify the fingerprint with a trusted source, then select **Trust key and connect**. Accepted keys are stored in Ghostlink's own OpenSSH-format file at `%LOCALAPPDATA%\Ghostlink\known_hosts`; the user's OpenSSH file is not modified. Changed keys block the connection, with no automatic replacement. Malformed or unreadable trust files also block connections.
+An unknown server presents its algorithm and SHA-256 fingerprint **before authentication**. Verify the fingerprint with a trusted source, then select **Trust key and connect**. Accepted keys are stored in Ghostlink's own OpenSSH-format `known_hosts` file in the same app data directory; the user's OpenSSH file is not modified. Changed keys block the connection, with no automatic replacement. Malformed or unreadable trust files also block connections.
 
 Ghostlink reads the user's `~/.ssh/config`, including `Host` patterns and negation, `HostName`, `User`, `Port`, `IdentityFile`, `IdentitiesOnly`, `IdentityAgent`, and nested `Include` globs. It honors public-key/password/keyboard-interactive enablement, `BatchMode`, and the supported methods in `PreferredAuthentications`. Explicit destination usernames and ports take precedence. Identity paths support the current user's `~`, `%d`, `%h`, `%n`, `%r`, `%u`, `%p`, `%%`, and `${ENV}` expansion. Custom key paths belong in this config rather than the connection form.
 
-Without configured identity files, discovery checks `~/.ssh/id_ed25519`, `id_ecdsa`, and `id_rsa`. An available agent is used first; a missing Windows OpenSSH agent is skipped automatically. An encrypted key prompts for its passphrase only after the server accepts its public identity. Encrypted PEM identities require a matching `.pub` file. Password and keyboard-interactive authentication follow when offered by the server and allowed by config. Enter submits a prompt; Escape cancels it. A connection failure remains visible in its pane, alongside any previous terminal output.
+Without configured identity files, discovery checks `~/.ssh/id_ed25519`, `id_ecdsa`, and `id_rsa`. An available agent is used first: Windows OpenSSH on Windows, or `SSH_AUTH_SOCK` / configured `IdentityAgent` sockets on macOS and Linux. A missing agent is skipped automatically. An encrypted key prompts for its passphrase only after the server accepts its public identity. Encrypted PEM identities require a matching `.pub` file. Password and keyboard-interactive authentication follow when offered by the server and allowed by config. Enter submits a prompt; Escape cancels it. A connection failure remains visible in its pane, alongside any previous terminal output.
 
 This is a documented subset of SSH config, not full OpenSSH compatibility. System-wide config, forwarding, and OpenSSH process/presentation settings are not applied. `Match` blocks, proxies/jump hosts, certificate/hardware-key providers, custom trust-file directives, and algorithm overrides produce explicit unsupported-setting errors. Agent forwarding and certificate authentication are not enabled.
 
@@ -79,7 +96,9 @@ This is a documented subset of SSH config, not full OpenSSH compatibility. Syste
 ./scripts/dev.ps1 fmt
 ```
 
-The 71-test suite includes real ConPTY/PowerShell round trips; an in-process russh server for trust, automatic identity discovery, encrypted keys, RSA signatures, password and keyboard-interactive prompts, shared authentication and independent channel lifetimes, interleaved startup messages, genuine shell refusal/channel closure, PTY sizing, terminal replies, large output, exit status, and cancellation; SSH config precedence/includes; saved-connection persistence, concurrent catalog updates, malformed-file protection, and picker CRUD/search/keyboard behavior; simulated GPUI session/tab switching, close/focus restoration, pane layouts, credential interactions, selection, clipboard, and drag auto-scroll; responsive picker/tab-bar layout and selected-tab visibility, retained row layout and Unicode/style boundaries; and recorded VT sequences covering Unicode, alternate screens, scrollback, wrapped-line copying, cursor-key modes, and bracketed paste. Selection tests cover copying after shell exit, tracked anchors during output/resize, word/line dragging, wide/combining graphemes, release outside the pane, focus changes, and retained-worker shutdown. Tests use generated identities and temporary trust/config files and never connect to an external host or read the user's keys.
+On macOS/Linux, run the corresponding `bash scripts/dev.sh check|test|clippy|fmt` commands. Unix tests require the OpenSSH client tools (`ssh-agent` and `ssh-add`) and use a private temporary agent with generated keys. Real Unix PTY checks cover input, Unicode, resizing, output drain, exit, copy after exit, and worker shutdown. Windows-specific PowerShell/ConPTY and pointer-selection tests stay gated to Windows.
+
+The Windows 71-test suite includes real ConPTY/PowerShell round trips; an in-process russh server for trust, automatic identity discovery, encrypted keys, RSA signatures, password and keyboard-interactive prompts, shared authentication and independent channel lifetimes, interleaved startup messages, genuine shell refusal/channel closure, PTY sizing, terminal replies, large output, exit status, and cancellation; SSH config precedence/includes; saved-connection persistence, concurrent catalog updates, malformed-file protection, and picker CRUD/search/keyboard behavior; simulated GPUI session/tab switching, close/focus restoration, pane layouts, credential interactions, selection, clipboard, and drag auto-scroll; responsive picker/tab-bar layout and selected-tab visibility, retained row layout and Unicode/style boundaries; and recorded VT sequences covering Unicode, alternate screens, scrollback, wrapped-line copying, cursor-key modes, and bracketed paste. Selection tests cover copying after shell exit, tracked anchors during output/resize, word/line dragging, wide/combining graphemes, release outside the pane, focus changes, and retained-worker shutdown. Tests use generated identities and temporary trust/config files and never connect to an external host or read the user's keys.
 
 Two additional manual probes measure local and loopback SSH input-to-snapshot latency. A native Windows renderer probe measures preparation and paint work. See [performance measurements](llm-docs/performance.md) for results and reproduction commands.
 
@@ -95,9 +114,10 @@ cargo +stable test --locked -p session full_screen:: -- --ignored --nocapture
 
 | Crate | Responsibility |
 |---|---|
+| `platform` | Native app-data/home directories, fonts, app identity, and shortcut defaults |
 | `ghostty-sys` | Small C bridge compiled against the pinned upstream headers; private Rust ABI |
 | `terminal-core` | Exclusive native ownership, input encoding, checked dimensions, owned snapshots |
-| `session` | ConPTY and direct russh transports, authentication, host-key trust, bounded queues, cancellation |
+| `session` | ConPTY/Unix PTY and direct russh transports, authentication, host-key trust, bounded queues, cancellation |
 | `terminal-view` | GPUI canvas, fixed cell placement, focus, selection, clipboard, preliminary IME composition |
 | `app` | Tabs, recursive pane layouts, divider dragging, saved-connection catalog and picker, workspace controls |
 

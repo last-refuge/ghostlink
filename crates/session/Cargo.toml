@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+ghostlink-platform = { path = "../platform" }
 terminal-core = { path = "../terminal-core" }
 anyhow.workspace = true
 async-channel.workspace = true

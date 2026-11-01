@@ -221,6 +221,8 @@ impl ConnectForm {
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
+        let primary =
+            ghostlink_platform::primary_modifier(mods.control, mods.platform) && !mods.alt;
         if let Some(editor) = &self.editor {
             match key {
                 "escape" => self.back(window, cx),
@@ -255,17 +257,17 @@ impl ConnectForm {
                         cx.notify();
                     }
                 }
-                "n" if mods.control && !mods.alt && !self.load_failed => {
+                "n" if primary && !self.load_failed => {
                     self.begin_add(cx);
                     self.focus(window, cx);
                     cx.notify();
                 }
-                "e" if mods.control && !mods.alt => {
+                "e" if primary => {
                     self.begin_edit(cx);
                     self.focus(window, cx);
                     cx.notify();
                 }
-                "f" if mods.control && !mods.alt => self.focus(window, cx),
+                "f" if primary => self.focus(window, cx),
                 "delete" if self.focus.is_focused(window) => self.delete(cx),
                 "tab" => self.focus(window, cx),
                 _ => return,

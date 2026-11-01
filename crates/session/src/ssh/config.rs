@@ -29,9 +29,12 @@ struct Options {
     methods: Option<Vec<russh::MethodKind>>,
 }
 pub(super) fn resolve(profile: &SshProfile, home: &Path) -> Result<Resolved> {
-    let local_user = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .context("Could not determine your SSH username")?;
+    let local_user = if cfg!(windows) {
+        std::env::var("USERNAME").or_else(|_| std::env::var("USER"))
+    } else {
+        std::env::var("USER").or_else(|_| std::env::var("LOGNAME"))
+    }
+    .context("Could not determine your SSH username")?;
     resolve_with_user(profile, home, &local_user)
 }
 fn resolve_with_user(profile: &SshProfile, home: &Path, local_user: &str) -> Result<Resolved> {

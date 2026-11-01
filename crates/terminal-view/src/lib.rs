@@ -275,19 +275,23 @@ impl TerminalView {
         }
         let keystroke = &event.keystroke;
         let mods = &keystroke.modifiers;
-        if mods.control && mods.shift && keystroke.key == "r" && self.remote {
+        let primary =
+            ghostlink_platform::primary_modifier(mods.control, mods.platform) && !mods.alt;
+        if primary && mods.shift && keystroke.key == "r" && self.remote {
             self.request_reconnect(cx);
             window.prevent_default();
             cx.stop_propagation();
             return;
         }
-        if mods.control && mods.shift && keystroke.key == "c" {
+        let clipboard =
+            !mods.alt && (mods.control && mods.shift || cfg!(target_os = "macos") && mods.platform);
+        if clipboard && keystroke.key == "c" {
             self.copy(cx);
             window.prevent_default();
             cx.stop_propagation();
             return;
         }
-        if mods.control && mods.shift && keystroke.key == "v" {
+        if clipboard && keystroke.key == "v" {
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                 if self.cancel_drag() {
                     cx.notify();
@@ -621,7 +625,9 @@ impl Render for TerminalView {
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.request_reconnect(cx)),
                                     )
-                                    .child("Reconnect · Ctrl Shift R"),
+                                    .child(ghostlink_platform::shortcut_hint(
+                                        "Reconnect · Ctrl Shift R",
+                                    )),
                             )
                         }),
                 )
@@ -659,7 +665,7 @@ impl Render for TerminalView {
                         canvas(
                             move |bounds, window, cx| {
                                 let _prepare_timer = perf::Timer::start("terminal-prepare-ms");
-                                let font = font("Cascadia Mono");
+                                let font = font(ghostlink_platform::TERMINAL_FONT);
                                 let font_id = window.text_system().resolve_font(&font);
                                 let width = window
                                     .text_system()
@@ -744,7 +750,9 @@ impl Render for TerminalView {
                                                     px(FONT_SIZE),
                                                     &[TextRun {
                                                         len: composition.len(),
-                                                        font: font("Cascadia Mono"),
+                                                        font: font(
+                                                            ghostlink_platform::TERMINAL_FONT,
+                                                        ),
                                                         color: rgb(0xdce3df).into(),
                                                         background_color: Some(
                                                             rgb(0x20282b).into(),

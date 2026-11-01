@@ -5,6 +5,8 @@ mod full_screen;
 #[cfg(test)]
 mod probe;
 mod ssh;
+#[cfg(all(test, unix))]
+mod unix_tests;
 pub use ssh::{CredentialPrompt, HostKeyPrompt, SshAuth, SshConnection, SshProfile};
 
 use anyhow::{Context as _, Result, bail, ensure};
@@ -32,17 +34,38 @@ pub struct LocalProfile {
 }
 impl Default for LocalProfile {
     fn default() -> Self {
-        // Windows PowerShell is present on supported Windows installations.
-        // Use the absolute system path rather than searching an untrusted working directory.
-        let system = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("C:/Windows"));
+        #[cfg(windows)]
+        let (program, args) = {
+            // Windows PowerShell is present on supported Windows installations.
+            // Use the absolute system path rather than searching an untrusted working directory.
+            let system = std::env::var_os("SystemRoot")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("C:/Windows"));
+            (
+                system
+                    .join("System32/WindowsPowerShell/v1.0/powershell.exe")
+                    .to_string_lossy()
+                    .into_owned(),
+                vec!["-NoLogo".into()],
+            )
+        };
+        #[cfg(unix)]
+        let (program, args) = {
+            let program = std::env::var_os("SHELL")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute() && path.is_file())
+                .unwrap_or_else(|| {
+                    PathBuf::from(if cfg!(target_os = "macos") {
+                        "/bin/zsh"
+                    } else {
+                        "/bin/sh"
+                    })
+                });
+            (program.to_string_lossy().into_owned(), vec!["-l".into()])
+        };
         Self {
-            program: system
-                .join("System32/WindowsPowerShell/v1.0/powershell.exe")
-                .to_string_lossy()
-                .into_owned(),
-            args: vec!["-NoLogo".into()],
+            program,
+            args,
             directory: std::env::current_dir().ok(),
         }
     }

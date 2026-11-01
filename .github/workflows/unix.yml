@@ -1,0 +1,109 @@
+name: macOS and Linux
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.os }} / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos, arch: aarch64, runner: macos-15 }
+          - { os: macos, arch: x86_64, runner: macos-15-intel }
+          - { os: linux, arch: x86_64, runner: ubuntu-24.04 }
+          - { os: linux, arch: aarch64, runner: ubuntu-24.04-arm }
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Linux development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake clang libclang-dev pkg-config libssl-dev \
+            libfontconfig1-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev libwayland-dev libvulkan1 fonts-dejavu-core \
+            openssh-client desktop-file-utils xvfb xauth x11-utils mesa-vulkan-drivers
+      - name: Verify macOS build tools
+        if: runner.os == 'macOS'
+        run: |
+          xcrun --find clang
+          xcrun --find metal
+          cmake --version
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
+      - name: Build pinned libghostty-vt
+        run: bash scripts/bootstrap.sh
+      - name: Check formatting
+        run: bash scripts/dev.sh fmt
+      - name: Lint
+        run: bash scripts/dev.sh clippy
+      - name: Test
+        run: bash scripts/dev.sh test
+      - name: Validate desktop entry
+        if: runner.os == 'Linux'
+        run: desktop-file-validate packaging/linux/io.github.last-refuge.ghostlink.desktop
+      - name: Package release build
+        run: bash scripts/package.sh
+      - name: Smoke-test Linux application startup
+        if: runner.os == 'Linux'
+        run: bash scripts/smoke-linux.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ghostlink-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/ghostlink-*
+          if-no-files-found: error
+          compression-level: 0
+
+  arch:
+    name: Arch package
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    timeout-minutes: 90
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --needed --noconfirm \
+            git rustup clang cmake pkgconf curl tar xz fontconfig freetype2 \
+            libxcb libx11 libxkbcommon libxkbcommon-x11 wayland \
+            vulkan-icd-loader zlib ttf-dejavu openssh desktop-file-utils
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Build and test package as an unprivileged user
+        shell: bash
+        run: |
+          useradd --create-home builder
+          cp -a "$GITHUB_WORKSPACE" /home/builder/repository
+          chown -R builder:builder /home/builder/repository
+          revision=$(git rev-parse HEAD)
+          runuser -u builder -- rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
+          runuser -u builder -- env \
+            "GHOSTLINK_SOURCE_URL=git+file:///home/builder/repository#commit=$revision" \
+            bash -c 'cd /home/builder/repository/packaging/arch && makepkg --cleanbuild --force --noconfirm'
+          mkdir -p dist
+          cp /home/builder/repository/packaging/arch/*.pkg.tar.zst dist/
+          desktop-file-validate packaging/linux/io.github.last-refuge.ghostlink.desktop
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ghostlink-arch-x86_64
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+          compression-level: 0

@@ -126,7 +126,7 @@ impl Row {
                     end += 1;
                 }
             }
-            let mut face = font("Cascadia Mono");
+            let mut face = font(ghostlink_platform::TERMINAL_FONT);
             // Per-cell rendering did not form ligatures. Keep that behavior while batching.
             face.features = FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)]));
             if cell.bold {

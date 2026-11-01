@@ -2,20 +2,20 @@
 
 Date: 2026-10-30
 
-Status: A saved-connection picker opens at startup and for new SSH sessions, with search, add/edit/delete, and persistent named destinations. SSH sessions own their tabs and split panes, with automatic config/key discovery and shared authenticated connections. Scrollback selection, wrap-aware copying, terminal mouse reporting, and reconnect with retained output are implemented. Real Neovim and tmux checks pass through WSL. Local shell UI is deferred. The integration prototype remains open for live external-server compatibility, native pointer/IME validation, and accessibility. See [implementation progress](implementation-progress.md).
+Status: Native build helpers and packaging cover Windows, macOS, and Linux, including an Arch/Omarchy package recipe. A saved-connection picker opens at startup and for new SSH sessions, with search, add/edit/delete, and persistent named destinations. SSH sessions own their tabs and split panes, with automatic config/key discovery and shared authenticated connections. Scrollback selection, wrap-aware copying, terminal mouse reporting, and reconnect with retained output are implemented. Real Neovim and tmux checks pass through WSL. Local shell UI is deferred. The integration prototype remains open for live external-server compatibility, native platform rendering/IME validation, and accessibility. See [implementation progress](implementation-progress.md).
 
 ## Product direction
 
-Build **Ghostlink as a Windows-first SSH workspace using Rust, GPUI, and libghostty-vt**. The primary workflow is connecting to remote servers and moving between related shells. The sidebar represents open SSH sessions. Each session owns its tabs and split layouts; changing sidebar selection restores that session's selected tab and focused pane. New tabs and splits use the current session's authenticated connection. Local shell UI is deferred while this SSH workflow is refined.
+Build **Ghostlink as a desktop SSH workspace for Windows, macOS, and Linux using Rust, GPUI, and libghostty-vt**. The primary workflow is connecting to remote servers and moving between related shells. The sidebar represents open SSH sessions. Each session owns its tabs and split layouts; changing sidebar selection restores that session's selected tab and focused pane. New tabs and splits use the current session's authenticated connection. Local shell UI is deferred while this SSH workflow is refined.
 
 “Shell” means a terminal application that hosts PowerShell, Command Prompt, WSL, and other installed shells, rather than a new shell language. This is a greenfield project.
 
 ## 1. Architecture and responsibilities
 
-- **Rust** owns application state, sessions, Windows integration, and networking.
+- **Rust** owns application state, sessions, desktop integration, and networking.
 - **GPUI** owns windows, interface controls, input handling, and GPU drawing.
 - **libghostty-vt** owns terminal parsing and state: the screen, cursor, scrollback, modes, and terminal input encoding.
-- **ConPTY** connects local Windows processes.
+- **ConPTY / Unix PTYs** connect local processes on their respective platforms.
 - **russh** provides direct SSH connections.
 
 libghostty-vt supports Windows, but supplies no windowing or renderer drawing code. Build a terminal view in GPUI that paints libghostty’s state. Both libghostty’s API and GPUI are evolving, so pin tested revisions. See the [Ghostling architecture](https://github.com/ghostty-org/ghostling) and [GPUI documentation](https://github.com/zed-industries/zed/blob/main/crates/gpui/README.md).
@@ -80,11 +80,12 @@ Keep the core small and independently testable.
 
 | Component | Responsibility |
 |---|---|
+| `platform` | Native directories, fonts, app identity, and shortcut defaults |
 | `ghostty-sys` | C bindings and native-library linking |
 | `terminal-core` | Safe terminal ownership, input encoding, snapshots, and resizing |
 | `terminal-view` | GPUI painting, selection, hit testing, IME, and accessibility |
 | `session` | Local and SSH lifecycle, transport events, cancellation, and reconnect |
-| `app` | Tabs, panes, hosts, workspaces, settings, and Windows integration |
+| `app` | Tabs, panes, hosts, workspaces, settings, and desktop integration |
 
 Each session should have one owner of its libghostty state. Background workers handle blocking process I/O and SSH networking; GPUI receives render snapshots without waiting on them.
 
@@ -170,7 +171,7 @@ Release validation should cover:
 - Sleep/resume and network interruptions.
 - GPU recovery.
 
-Use recorded terminal streams for repeatable correctness and rendering checks, plus Windows CI and clean-machine installation tests.
+Use recorded terminal streams for repeatable correctness and rendering checks, plus native Windows/macOS/Linux CI, Arch package checks, and clean-machine installation tests. See [the build guide](../docs/building.md) for native prerequisites, target architectures, and packaging commands.
 
 ## First build milestone
 

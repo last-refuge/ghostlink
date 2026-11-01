@@ -135,26 +135,24 @@ impl SshProfile {
         } else {
             (address, 0)
         };
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
+        let home = ghostlink_platform::home_dir()
             .context("Could not find your home directory for SSH key discovery")?;
         Self::new(
             host.into(),
             port,
             username.into(),
-            SshAuth::Automatic {
-                home: PathBuf::from(home),
-            },
+            SshAuth::Automatic { home },
         )
     }
     pub fn new(host: String, port: u16, username: String, auth: SshAuth) -> Result<Self> {
-        let directory = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
+        let directory = ghostlink_platform::data_dir()
+            .context("Could not find your application data directory for SSH host keys")?;
         let profile = Self {
             host,
             port,
             username,
             auth,
-            known_hosts: PathBuf::from(directory).join("Ghostlink/known_hosts"),
+            known_hosts: directory.join("known_hosts"),
         };
         profile.validate()?;
         Ok(profile)

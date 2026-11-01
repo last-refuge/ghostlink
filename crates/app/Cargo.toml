@@ -9,6 +9,7 @@ name = "ghostlink"
 path = "src/main.rs"
 
 [dependencies]
+ghostlink-platform = { path = "../platform" }
 terminal-view = { path = "../terminal-view" }
 session = { path = "../session" }
 gpui.workspace = true
@@ -19,7 +20,10 @@ tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "=0.6.2"
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Security", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui = { workspace = true, features = ["wayland", "x11"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

@@ -95,10 +95,11 @@ impl ConnectionStore {
         if cfg!(test) {
             return Self::memory();
         }
-        match std::env::var_os("LOCALAPPDATA") {
-            Some(path) => Self::at(PathBuf::from(path).join("Ghostlink/connections.json")),
+        match ghostlink_platform::data_dir() {
+            Some(path) => Self::at(path.join("connections.json")),
             None => Self(Storage::Unavailable(
-                "LOCALAPPDATA is not set; saved connections are unavailable".into(),
+                "Could not find your application data directory; saved connections are unavailable"
+                    .into(),
             )),
         }
     }

@@ -55,13 +55,15 @@ impl Field {
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
-        if mods.control && key == "a" {
+        let primary =
+            ghostlink_platform::primary_modifier(mods.control, mods.platform) && !mods.alt;
+        if primary && key == "a" {
             self.selected = 0..self.value.len();
-        } else if mods.control && key == "v" {
+        } else if primary && key == "v" {
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                 self.replace(self.selected.clone(), &text.replace(['\r', '\n'], ""));
             }
-        } else if mods.control && key == "c" && !self.secret {
+        } else if primary && key == "c" && !self.secret {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.value[self.selected.clone()].to_owned(),
             ));
@@ -161,7 +163,7 @@ impl Render for Field {
                             px(14.),
                             &[TextRun {
                                 len: text.len(),
-                                font: font("Segoe UI"),
+                                font: font(ghostlink_platform::UI_FONT),
                                 color: rgb(0xdce3df).into(),
                                 background_color: None,
                                 underline: None,

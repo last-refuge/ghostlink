@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidateSet('run', 'build', 'check', 'test', 'clippy', 'fmt')][string]$Task = 'run')
+param([ValidateSet('run', 'build', 'release', 'check', 'test', 'clippy', 'fmt')][string]$Task = 'run')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (!$env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:TEMP 'ghostlink-target' }
@@ -15,6 +15,7 @@ if ($installed -match 'stable-x86_64-pc-windows-msvc') {
 $arguments = switch ($Task) {
     'run' { @('run', '--locked', '-p', 'ghostlink') }
     'build' { @('build', '--locked', '--workspace') }
+    'release' { @('build', '--locked', '--release', '-p', 'ghostlink') }
     'check' { @('check', '--locked', '--workspace') }
     'test' { @('test', '--locked', '--workspace') }
     'clippy' { @('clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings') }

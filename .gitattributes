@@ -1,0 +1,5 @@
+*.sh text eol=lf
+*.yml text eol=lf
+PKGBUILD text eol=lf
+*.desktop text eol=lf
+/vendor/** linguist-vendored

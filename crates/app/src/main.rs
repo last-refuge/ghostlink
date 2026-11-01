@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod brand;
 mod chrome;
@@ -9,6 +9,8 @@ mod layout;
 #[cfg(test)]
 mod tests;
 mod ui;
+#[cfg(windows)]
+mod windows;
 
 use connect::{ConnectEvent, ConnectForm};
 use connections::ConnectionStore;
@@ -566,14 +568,14 @@ fn button(id: &'static str, label: &'static str) -> Stateful<Div> {
         .child(label)
         .tooltip(move |_, cx| {
             ui::hint(
-                match id {
+                ghostlink_platform::shortcut_hint(match id {
                     "new-tab" => "New tab · Ctrl Shift T",
                     "split-right" => "Split right · Ctrl Shift D",
                     "split-below" => "Split below · Ctrl Shift E",
                     "zoom-pane" => "Zoom / restore pane · Ctrl Shift Z",
                     "connect-ssh" => "New SSH session · Ctrl Shift K",
                     _ => label,
-                },
+                }),
                 cx,
             )
         })
@@ -733,7 +735,9 @@ impl Workspace {
                     .text_xs()
                     .line_height(px(16.))
                     .text_color(rgb(0x788781))
-                    .child("Ctrl Shift K  ·  New session"),
+                    .child(ghostlink_platform::shortcut_hint(
+                        "Ctrl Shift K  ·  New session",
+                    )),
             )
             .into_any_element()
     }
@@ -914,7 +918,7 @@ impl Render for Workspace {
             .flex_col()
             .bg(rgb(0x111517))
             .text_color(rgb(0xdce3df))
-            .font_family("Segoe UI")
+            .font_family(ghostlink_platform::UI_FONT)
             .text_sm()
             .line_height(px(20.))
             .track_focus(&self.focus)
@@ -1108,10 +1112,49 @@ fn bind_shortcuts(cx: &mut App) {
         KeyBinding::new("ctrl-shift-pagedown", NextSession, Some("Workspace")),
         KeyBinding::new("ctrl-shift-pageup", PreviousSession, Some("Workspace")),
     ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-t", NewTerminal, Some("Workspace")),
+        KeyBinding::new("cmd-shift-t", NewTerminal, Some("Workspace")),
+        KeyBinding::new("cmd-w", CloseTerminal, Some("Workspace")),
+        KeyBinding::new("cmd-shift-w", CloseTerminal, Some("Workspace")),
+        KeyBinding::new("cmd-shift-b", ToggleSidebar, Some("Workspace")),
+        KeyBinding::new("cmd-shift-k", ConnectSsh, Some("Workspace")),
+        KeyBinding::new("cmd-n", ConnectSsh, Some("Workspace")),
+        KeyBinding::new("cmd-shift-d", SplitRight, Some("Workspace")),
+        KeyBinding::new("cmd-shift-e", SplitBelow, Some("Workspace")),
+        KeyBinding::new("cmd-shift-j", NextPane, Some("Workspace")),
+        KeyBinding::new("cmd-shift-z", ZoomPane, Some("Workspace")),
+        KeyBinding::new("cmd-shift-pagedown", NextSession, Some("Workspace")),
+        KeyBinding::new("cmd-shift-pageup", PreviousSession, Some("Workspace")),
+        KeyBinding::new("cmd-q", Quit, None),
+    ]);
+}
+#[cfg(target_os = "macos")]
+actions!(ghostlink_macos, [Quit]);
+
+#[cfg(target_os = "macos")]
+fn configure_macos(cx: &mut App) {
+    use gpui::{Menu, MenuItem, SystemMenuType};
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.set_menus(vec![Menu {
+        name: "Ghostlink".into(),
+        items: vec![
+            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::separator(),
+            MenuItem::action("Quit Ghostlink", Quit),
+        ],
+    }]);
 }
 fn main() {
+    // Keep a marker for Setup/Uninstall without making the app single-instance.
+    // A marker failure must not prevent starting an SSH workspace.
+    #[cfg(windows)]
+    let _running_marker = windows::running_marker().ok();
     Application::new().run(|cx| {
         bind_shortcuts(cx);
+        #[cfg(target_os = "macos")]
+        configure_macos(cx);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -1121,6 +1164,7 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
         cx.open_window(
             WindowOptions {
+                app_id: Some(ghostlink_platform::APP_ID.into()),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(700.), px(520.))),
                 titlebar: Some(TitlebarOptions {
