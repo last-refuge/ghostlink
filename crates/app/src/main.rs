@@ -3,6 +3,7 @@
 mod brand;
 mod chrome;
 mod connect;
+mod connections;
 mod field;
 mod layout;
 #[cfg(test)]
@@ -10,6 +11,7 @@ mod tests;
 mod ui;
 
 use connect::{ConnectEvent, ConnectForm};
+use connections::ConnectionStore;
 use gpui::{
     AnyElement, App, Application, Bounds, Context, CursorStyle, Div, Entity, FocusHandle,
     Focusable, FontWeight, KeyBinding, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit,
@@ -74,25 +76,36 @@ struct Workspace {
     next_id: usize,
     sidebar: bool,
     connect_form: Option<Entity<ConnectForm>>,
+    connection_store: ConnectionStore,
     split_bounds: HashMap<usize, Bounds<Pixels>>,
     drag: Option<SplitDrag>,
     viewport: Size<Pixels>,
 }
 impl Workspace {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_connections(ConnectionStore::local(), window, cx)
+    }
+    fn with_connections(
+        connection_store: ConnectionStore,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
-        Self {
+        let mut workspace = Self {
             focus,
             sessions: Vec::new(),
             active: 0,
             next_id: 0,
             sidebar: true,
             connect_form: None,
+            connection_store,
             split_bounds: HashMap::new(),
             drag: None,
             viewport: window.viewport_size(),
-        }
+        };
+        workspace.show_connect(window, cx);
+        workspace
     }
     fn id(&mut self) -> usize {
         let id = self.next_id;
@@ -138,6 +151,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         let connection = SshConnection::new(profile)?;
+        self.connect_form = None;
         self.sync_focus(window, cx);
         let id = self.id();
         let title = connection.profile().label();
@@ -324,7 +338,11 @@ impl Workspace {
         }
         self.active = self.active.min(self.sessions.len().saturating_sub(1));
         self.reset_navigation();
-        self.focus_active(window, cx);
+        if self.sessions.is_empty() {
+            self.show_connect(window, cx);
+        } else {
+            self.focus_active(window, cx);
+        }
         cx.notify();
     }
     fn close_tab(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -403,25 +421,32 @@ impl Workspace {
         }
     }
     fn show_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.connect_form.is_some() {
+        if let Some(form) = &self.connect_form {
+            form.read(cx).focus(window, cx);
             return;
         }
         self.sync_focus(window, cx);
-        let form = cx.new(ConnectForm::new);
+        let store = self.connection_store.clone();
+        let can_cancel = !self.sessions.is_empty();
+        let form = cx.new(|cx| ConnectForm::new(store, can_cancel, cx));
         cx.subscribe_in(&form, window, |this, form, event, window, cx| {
             match event {
-                ConnectEvent::Submit { profile } => {
+                ConnectEvent::Submit { profile, name } => {
                     // Clear the modal before opening the first tab.
                     this.connect_form = None;
                     if let Err(error) = this.open_ssh(profile.clone(), window, cx) {
                         this.connect_form = Some(form.clone());
                         form.update(cx, |form, cx| form.set_error(error.to_string(), cx));
                         form.read(cx).focus(window, cx);
+                    } else {
+                        this.sessions[this.active].title = name.clone();
                     }
                 }
                 ConnectEvent::Cancel => {
-                    this.connect_form = None;
-                    this.focus_active(window, cx);
+                    if !this.sessions.is_empty() {
+                        this.connect_form = None;
+                        this.focus_active(window, cx);
+                    }
                 }
             }
             cx.notify();
@@ -546,7 +571,7 @@ fn button(id: &'static str, label: &'static str) -> Stateful<Div> {
                     "split-right" => "Split right · Ctrl Shift D",
                     "split-below" => "Split below · Ctrl Shift E",
                     "zoom-pane" => "Zoom / restore pane · Ctrl Shift Z",
-                    "connect-ssh" => "Connect to a server · Ctrl Shift K",
+                    "connect-ssh" => "New SSH session · Ctrl Shift K",
                     _ => label,
                 },
                 cx,
@@ -708,7 +733,7 @@ impl Workspace {
                     .text_xs()
                     .line_height(px(16.))
                     .text_color(rgb(0x788781))
-                    .child("Ctrl Shift K  ·  Connect"),
+                    .child("Ctrl Shift K  ·  New session"),
             )
             .into_any_element()
     }
@@ -839,57 +864,11 @@ impl Workspace {
     }
     fn session_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(tab) = self.active_tab() else {
-            let artwork = brand::welcome_image_size(self.viewport, self.sidebar);
             return div()
-                .id("welcome-screen")
-                .debug_selector(|| "welcome-screen".into())
+                .id("empty-workspace")
                 .flex_1()
                 .min_w_0()
                 .min_h_0()
-                .overflow_y_scroll()
-                .child(
-                    div()
-                        .w_full()
-                        .min_h_full()
-                        .p_6()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap_3()
-                        .child(
-                            img(brand::illustration())
-                                .id("welcome-artwork")
-                                .debug_selector(|| "welcome-artwork".into())
-                                .w(artwork.width)
-                                .h(artwork.height)
-                                .flex_none()
-                                .object_fit(ObjectFit::Contain),
-                        )
-                        .child(
-                            div()
-                                .text_xl()
-                                .line_height(px(28.))
-                                .text_center()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Connect to your server"),
-                        )
-                        .child(
-                            div()
-                                .max_w_full()
-                                .text_center()
-                                .text_color(rgb(0x8e9b9e))
-                                .child("Your sessions live on the left. Each keeps its own tabs."),
-                        )
-                        .child(
-                            div()
-                                .mt_2()
-                                .text_center()
-                                .text_xs()
-                                .text_color(rgb(0xa8d8c0))
-                                .child("Ctrl Shift K   Connect with SSH"),
-                        ),
-                )
                 .into_any_element();
         };
         let tree = tab.zoom.map_or_else(|| tab.layout.clone(), Layout::Pane);
@@ -1052,7 +1031,7 @@ impl Render for Workspace {
                     .when_some(
                         self.sessions
                             .get(self.active)
-                            .map(|session| session.title.clone()),
+                            .map(|session| session.connection.profile().label()),
                         |root, title| {
                             let hint = title.clone();
                             root.child(
@@ -1077,7 +1056,7 @@ impl Render for Workspace {
                     )
                     .child(
                         div().ml_auto().child(
-                            button("connect-ssh", "Connect SSH")
+                            button("connect-ssh", "New session")
                                 .bg(rgb(0x293e36))
                                 .text_color(rgb(0xc4e1d2))
                                 .on_click(
@@ -1103,9 +1082,9 @@ impl Render for Workspace {
                         .absolute()
                         .inset_0()
                         .flex()
-                        .items_start()
+                        .items_center()
                         .justify_center()
-                        .py_6()
+                        .p_6()
                         .overflow_y_scroll()
                         .occlude()
                         .bg(rgba(0x000000a0))

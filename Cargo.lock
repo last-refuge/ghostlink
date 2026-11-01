@@ -2406,7 +2406,10 @@ dependencies = [
  "anyhow",
  "gpui",
  "raw-window-handle",
+ "serde",
+ "serde_json",
  "session",
+ "tempfile",
  "terminal-view",
  "windows-sys 0.61.2",
 ]

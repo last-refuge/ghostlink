@@ -21,6 +21,8 @@ zeroize = "=1.9.1"
 rand = "=0.10.3"
 tempfile = "=3.27.0"
 glob = "=0.3.4"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
 
 [profile.dev]
 debug = 1

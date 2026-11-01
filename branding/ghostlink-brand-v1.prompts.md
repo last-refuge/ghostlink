@@ -13,7 +13,7 @@ The artwork follows the application's graphite, pale mint, sage, and warm off-wh
 
 ## App integration
 
-The logo appears in the app header, and the illustration appears above the connection welcome message. The illustration scales to the available window space. Both PNGs are embedded in the executable and cached across renders.
+The logo appears in the app header, and the illustration appears in the connection picker's first-connection and empty-list states. The picker replaces the former standalone welcome screen. Both PNGs are embedded in the executable and cached across renders.
 
 ## Final logo generation prompt
 

@@ -78,20 +78,21 @@ fn compact_tab_bar_keeps_controls_separate_at_small_and_large_sizes(cx: &mut Tes
     });
 }
 #[gpui::test]
-fn empty_workspace_connect_shortcut_and_last_tab_return_to_welcome(cx: &mut TestAppContext) {
+fn startup_and_last_session_show_the_connection_picker(cx: &mut TestAppContext) {
     setup(cx);
     let window = cx.add_window(Workspace::new);
     window
         .update(cx, |workspace, window, _| {
             assert!(workspace.sessions.is_empty());
             assert!(workspace.sidebar);
-            assert!(workspace.focus.is_focused(window));
+            assert!(workspace.connect_form.is_some());
+            assert!(!workspace.focus.is_focused(window));
         })
         .unwrap();
     cx.simulate_keystrokes(*window, "ctrl-shift-t escape");
     window
         .update(cx, |workspace, window, cx| {
-            assert!(workspace.connect_form.is_none());
+            assert!(workspace.connect_form.is_some());
             assert!(workspace.sessions.is_empty());
             workspace.open_ssh(profile("alpha"), window, cx).unwrap();
         })
@@ -100,7 +101,8 @@ fn empty_workspace_connect_shortcut_and_last_tab_return_to_welcome(cx: &mut Test
     window
         .update(cx, |workspace, window, _| {
             assert!(workspace.sessions.is_empty());
-            assert!(workspace.focus.is_focused(window));
+            assert!(workspace.connect_form.is_some());
+            assert!(!workspace.focus.is_focused(window));
         })
         .unwrap();
     cx.simulate_keystrokes(*window, "ctrl-shift-k");
@@ -109,6 +111,98 @@ fn empty_workspace_connect_shortcut_and_last_tab_return_to_welcome(cx: &mut Test
             assert!(workspace.connect_form.is_some())
         })
         .unwrap();
+}
+
+#[gpui::test]
+fn saved_connection_picker_fits_small_windows_and_returns_to_the_active_session(
+    cx: &mut TestAppContext,
+) {
+    setup(cx);
+    let store = ConnectionStore::local();
+    for index in 0..20 {
+        store
+            .save(
+                None,
+                &format!("Connection {index:02}"),
+                &format!("host-{index}"),
+            )
+            .unwrap();
+    }
+    let retained = store.clone();
+    let (workspace, cx) =
+        cx.add_window_view(|window, cx| Workspace::with_connections(store, window, cx));
+    for (width, height) in [(700., 520.), (1280., 820.), (1947., 1100.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        let modal = cx.debug_bounds("connection-picker").unwrap();
+        let connect = cx.debug_bounds("submit-connect").unwrap();
+        assert!(
+            modal.left() >= px(0.) && modal.right() <= px(width),
+            "{modal:?}"
+        );
+        assert!(
+            modal.top() >= px(0.) && modal.bottom() <= px(height),
+            "{modal:?}"
+        );
+        assert!(
+            connect.bottom() <= modal.bottom() && connect.right() <= modal.right(),
+            "{connect:?} {modal:?}"
+        );
+    }
+    cx.simulate_resize(size(px(700.), px(520.)));
+    for (action, count) in [("delete-connection", 19), ("undo-delete", 20)] {
+        let bounds = cx.debug_bounds(action).unwrap();
+        let position =
+            bounds.origin + gpui::point(bounds.size.width * 0.5, bounds.size.height * 0.5);
+        cx.simulate_mouse_down(position, MouseButton::Left, Default::default());
+        cx.simulate_mouse_up(position, MouseButton::Left, Default::default());
+        assert_eq!(retained.load().unwrap().len(), count);
+        let modal = cx.debug_bounds("connection-picker").unwrap();
+        let connect = cx.debug_bounds("submit-connect").unwrap();
+        assert!(connect.bottom() <= modal.bottom() && modal.bottom() <= px(520.));
+    }
+    cx.simulate_keystrokes("ctrl-n");
+    let modal = cx.debug_bounds("connection-picker").unwrap();
+    let save = cx.debug_bounds("save-connection").unwrap();
+    let name = cx.debug_bounds("connection-name").unwrap();
+    let destination = cx.debug_bounds("connection-destination").unwrap();
+    assert!(name.size.height >= px(38.) && destination.size.height >= px(38.));
+    assert!(name.bottom() < destination.top() && destination.bottom() < save.top());
+    assert!(
+        save.bottom() <= modal.bottom() && modal.bottom() <= px(520.),
+        "{save:?} {modal:?}"
+    );
+    cx.simulate_keystrokes("escape");
+    // Mock the submitted profile to keep this GUI gate independent of user SSH config.
+    cx.update(|_, cx| {
+        let form = workspace.read(cx).connect_form.clone().unwrap();
+        form.update(cx, |_, cx| {
+            cx.emit(ConnectEvent::Submit {
+                profile: profile("ui"),
+                name: "Production".into(),
+            })
+        });
+    });
+    let tab = cx.update(|_, cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.sessions[0].title, "Production");
+        assert_eq!(
+            workspace.sessions[0].connection.profile().label(),
+            "ui@127.0.0.1:9"
+        );
+        workspace.active_tab().unwrap().id
+    });
+    cx.simulate_keystrokes("ctrl-shift-k escape");
+    cx.update(|window, cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.connect_form.is_none());
+        assert_eq!(workspace.active_tab().unwrap().id, tab);
+        assert!(
+            workspace.active_tab().unwrap().panes[0]
+                .terminal
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+    });
 }
 
 #[gpui::test]

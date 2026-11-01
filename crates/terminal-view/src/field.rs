@@ -34,6 +34,13 @@ impl Field {
     pub fn value(&self) -> &str {
         &self.value
     }
+    pub fn set_value(&mut self, value: &str, cx: &mut Context<Self>) {
+        self.value = Zeroizing::new(value.to_owned());
+        self.selected = value.len()..value.len();
+        self.marked = None;
+        self.scroll = px(0.);
+        cx.notify();
+    }
     fn replace(&mut self, range: Range<usize>, text: &str) {
         self.value.replace_range(range.clone(), text);
         self.selected = range.start + text.len()..range.start + text.len();

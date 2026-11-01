@@ -645,6 +645,13 @@ impl Render for TerminalView {
                     )
                     .on_mouse_down(MouseButton::Middle, cx.listener(Self::pointer_down))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::pointer_down))
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                        // Hover respects hit testing, so modal overlays don't send input
+                        // to a full-screen application beneath them.
+                        if this.mouse_capture.is_none() {
+                            this.pointer_move(event, cx);
+                        }
+                    }))
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                         this.pointer_scroll(event, cx)
                     }))

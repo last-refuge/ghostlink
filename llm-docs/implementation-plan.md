@@ -2,7 +2,7 @@
 
 Date: 2026-10-30
 
-Status: SSH sessions own their tabs and split panes, with automatic config/key discovery and shared authenticated connections. Scrollback selection, wrap-aware copying, terminal mouse reporting, and reconnect with retained output are implemented. Real Neovim and tmux checks pass through WSL. Local shell UI is deferred. The integration prototype remains open for live external-server compatibility, native pointer/IME validation, and accessibility. See [implementation progress](implementation-progress.md).
+Status: A saved-connection picker opens at startup and for new SSH sessions, with search, add/edit/delete, and persistent named destinations. SSH sessions own their tabs and split panes, with automatic config/key discovery and shared authenticated connections. Scrollback selection, wrap-aware copying, terminal mouse reporting, and reconnect with retained output are implemented. Real Neovim and tmux checks pass through WSL. Local shell UI is deferred. The integration prototype remains open for live external-server compatibility, native pointer/IME validation, and accessibility. See [implementation progress](implementation-progress.md).
 
 ## Product direction
 
@@ -49,7 +49,7 @@ The proposed direction is **quiet, precise, and tactile**:
 
 Three interactions should define the product:
 
-1. **Connect and work:** enter a hostname or alias, authenticate, and start working.
+1. **Connect and work:** choose a saved connection or add a hostname or alias, authenticate, and start working.
 2. **Stay grouped:** open related shells as tabs or splits in the current SSH session, and switch servers through the sidebar.
 3. **Resume a workspace:** restore a named arrangement of SSH sessions, tabs, and panes.
 

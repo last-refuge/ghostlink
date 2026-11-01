@@ -112,11 +112,23 @@ Validation: all **11 existing app tests**, Clippy with warnings denied, formatti
 
 Header alignment correction: the user's screenshot exposed a 60-pixel intrinsic image laid out at the top of a 40-pixel slot. The logo now uses explicit dimensions and flex centering. Layout inspection at 700, 1280, and 1947 logical pixels confirms matching image/container centers; the complete foreground mark fits within the clipping slot, with only background padding removed.
 
+## Increment 10: saved-connection picker
+
+Replaced the standalone welcome screen and one-shot destination form with a connection picker. It opens at startup, from **New session** / `Ctrl Shift K`, and after the last session closes. With no saved connections, it starts directly in the add form. Entries have a destination and optional friendly name, with automatic names when omitted. Search filters names and destinations; Up/Down selects, Enter or double-click connects, and Edit/Delete manage the selected entry. Deletion offers Undo. Adding or editing saves the entry and returns to the list. Escape returns from editing or dismisses the picker back to an existing terminal; an empty workspace keeps the picker open.
+
+The versioned catalog lives at `%LOCALAPPDATA%\Ghostlink\connections.json`. Only names, destination strings, and internal identifiers are saved. Exact destinations retain SSH aliases, IPv6 brackets, and explicit ports so config precedence is preserved. Password-bearing destinations are rejected. Existing SSH config/key discovery, trust checks, and interactive authentication still own credentials. Editing or deleting catalog entries does not change running sessions. Sidebar sessions use the saved name while the header keeps the destination visible. Related tabs and splits still share their current session; a new session opens the picker.
+
+Catalog updates reload under a nonblocking file lock, validate, and atomically replace through a flushed temporary file in the same directory. Multiple windows merge unrelated updates. Invalid, unreadable, or unsupported catalogs are reported without replacement; stale edits and duplicate destinations produce inline errors. File size and entry counts are bounded. Tests use isolated memory catalogs or temporary files. The approved illustration remains in the first-connection and empty-list states. Terminal hover reporting now respects occluding overlays while captured drags still work outside a pane.
+
+Validation: **71 correctness tests pass**, including disk round trips, edit/delete/undo, multi-handle updates, lock contention, malformed/future-file protection, automatic-authentication submissions, search and keyboard navigation, startup/last-session behavior, and focus restoration. Layout checks at 700 × 520, 1280 × 820, and 1947 × 1100 keep modal controls inside the viewport; actual Delete/Undo clicks are exercised at the smallest size. Existing session/tab/pane, SSH, selection, and mouse regressions pass. An existing drag auto-scroll test timed out on the first full run; its isolated rerun and the subsequent full suite passed. Clippy with warnings denied, formatting, and the development build pass. The updated executable launches with a responsive window. Native Windows pointer/IME and mixed-DPI checks remain open integration gates.
+
+Connection-name usability follow-up: Add/Edit now places **Connection name (optional)** first and focuses it on opening, with the SSH destination directly below. Names remain persistent and appear in the picker and session sidebar, with destination fallback when blank. The existing UI tests now type names through native text input, rename through Edit, and verify the submitted name. Small-window checks confirm both inputs remain visible and retain their full height. All **16 app tests** pass.
+
 ## Next increment
 
 1. Validate the new mouse and reconnect behavior on a live SSH server, then refine native Windows pointer/IME, font fallback, and mixed DPI.
-2. Add recent servers, followed by session/layout restoration after restart.
-3. Add saved hosts, jump hosts, and live Windows-agent validation.
+2. Add session/layout restoration after restart, building on the saved-connection catalog.
+3. Add jump hosts and live Windows-agent validation.
 4. Add full key-event metadata, screen-reader access, and further sustained-output rendering optimization.
 
 The integration milestone remains open. SSH protocol behavior and pane interactions have automated coverage; a live remote full-screen application gate has not been completed.

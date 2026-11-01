@@ -209,7 +209,10 @@ pub(super) fn install_drag_handlers(view: &Entity<TerminalView>, window: &mut Wi
                         this.selection_end(cx);
                     }
                 }
-                this.pointer_move(event, cx);
+                // Captured drags must still work outside the terminal's hitbox.
+                if this.mouse_capture.is_some() {
+                    this.pointer_move(event, cx);
+                }
             });
         }
     });
