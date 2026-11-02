@@ -5,6 +5,8 @@ resolver = "2"
 exclude = ["vendor/xattr"]
 
 [patch.crates-io]
+# GPUI 0.2.2 rejects Wayland clipboard offers containing only text/plain.
+gpui = { path = "vendor/gpui" }
 # GPUI's zed-async-tar uses xattr 0.2; modern libc removed Linux's ENOATTR alias.
 xattr = { path = "vendor/xattr" }
 

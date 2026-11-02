@@ -56,6 +56,11 @@ jobs:
           desktop-file-validate packaging/linux/io.github.last-refuge.ghostlink.desktop
       - name: Install pinned Rust
         run: rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
+      - name: Check Wayland clipboard formats
+        if: runner.os == 'Linux'
+        run: |
+          rustc --edition 2024 --test vendor/gpui/src/platform/linux/wayland/clipboard_mime.rs -o "$RUNNER_TEMP/ghostlink-clipboard-tests"
+          "$RUNNER_TEMP/ghostlink-clipboard-tests"
       - name: Build pinned libghostty-vt
         run: bash scripts/bootstrap.sh
       - name: Check formatting
