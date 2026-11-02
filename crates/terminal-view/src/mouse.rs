@@ -72,6 +72,19 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.pointer_end(cx);
+        if event.button == MouseButton::Right
+            && (event.modifiers.shift
+                || !self
+                    .screen
+                    .as_ref()
+                    .is_some_and(|screen| screen.mouse_tracking))
+        {
+            window.focus(&self.focus);
+            self.context_menu = Some(event.position);
+            cx.notify();
+            return;
+        }
+        self.context_menu = None;
         if !event.modifiers.shift
             && self.state == State::Running
             && self.screen.as_ref().is_some_and(|s| s.mouse_tracking)
