@@ -27,6 +27,7 @@ impl EventEmitter<TerminalEvent> for TerminalView {}
 
 pub struct TerminalView {
     focus: FocusHandle,
+    context_menu: Option<Point<Pixels>>,
     session: Option<Session>,
     screen: Option<Arc<Snapshot>>,
     state: State,
@@ -212,6 +213,7 @@ impl TerminalView {
         Self {
             focus: cx.focus_handle(),
             session,
+            context_menu: None,
             screen: None,
             state,
             error: None,
@@ -263,6 +265,12 @@ impl TerminalView {
         }
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "escape" && self.context_menu.take().is_some() {
+            window.prevent_default();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if matches!(self.state, State::AwaitingCredential(_)) {
             match event.keystroke.key.as_str() {
                 "enter" => self.answer_credential(true, window, cx),
@@ -283,21 +291,23 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
-        let clipboard =
-            !mods.alt && (mods.control && mods.shift || cfg!(target_os = "macos") && mods.platform);
-        if clipboard && keystroke.key == "c" {
+        let clipboard = !mods.alt
+            && (mods.control && mods.shift
+                || cfg!(any(target_os = "macos", target_os = "linux")) && mods.platform);
+        if clipboard && keystroke.key.eq_ignore_ascii_case("c") {
             self.copy(cx);
             window.prevent_default();
             cx.stop_propagation();
             return;
         }
-        if clipboard && keystroke.key == "v" {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                if self.cancel_drag() {
-                    cx.notify();
-                }
-                self.send(Input::Paste(text), cx);
-            }
+        if clipboard && keystroke.key.eq_ignore_ascii_case("v")
+            || keystroke.key == "insert"
+                && mods.shift
+                && !mods.control
+                && !mods.alt
+                && !mods.platform
+        {
+            self.paste(cx);
             window.prevent_default();
             cx.stop_propagation();
             return;
@@ -343,6 +353,22 @@ impl TerminalView {
             );
             window.prevent_default();
             cx.stop_propagation();
+        }
+    }
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        match cx.read_from_clipboard().and_then(|item| item.text()) {
+            Some(text) => {
+                if self.cancel_drag() {
+                    cx.notify();
+                }
+                self.send(Input::Paste(text), cx);
+            }
+            None => {
+                self.error = Some(
+                    "Clipboard text is unavailable. Copy text again, then retry paste.".into(),
+                );
+                cx.notify();
+            }
         }
     }
     fn cursor_bounds(&self) -> Option<Bounds<Pixels>> {
@@ -821,6 +847,63 @@ impl Render for TerminalView {
                         self.grid.rows()
                     ))),
             )
+            .when_some(self.context_menu, |root, position| {
+                root.child(
+                    deferred(
+                        anchored().position(position).child(
+                            div()
+                                .id("terminal-clipboard-menu")
+                                .debug_selector(|| "terminal-clipboard-menu".into())
+                                .w(px(160.))
+                                .p_1()
+                                .rounded_md()
+                                .shadow_lg()
+                                .border_1()
+                                .border_color(rgb(0x40594c))
+                                .bg(rgb(0x171c1f))
+                                .text_color(rgb(0xdce3df))
+                                .occlude()
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    this.context_menu = None;
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .id("terminal-menu-copy")
+                                        .debug_selector(|| "terminal-menu-copy".into())
+                                        .px_3()
+                                        .py_2()
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(rgb(0x293e36)))
+                                        .child("Copy")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.context_menu = None;
+                                            this.copy(cx);
+                                            window.focus(&this.focus);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("terminal-menu-paste")
+                                        .debug_selector(|| "terminal-menu-paste".into())
+                                        .px_3()
+                                        .py_2()
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(rgb(0x293e36)))
+                                        .child("Paste")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.context_menu = None;
+                                            this.paste(cx);
+                                            window.focus(&this.focus);
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 }
 
@@ -993,5 +1076,117 @@ impl EntityInputHandler for TerminalView {
         _: &mut Context<Self>,
     ) -> Option<usize> {
         Some(0)
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::{State, TerminalView};
+    use gpui::{ClipboardItem, KeyDownEvent, Keystroke, TestAppContext};
+    #[gpui::test]
+    fn paste_shortcuts_report_unreadable_clipboard_and_accept_text(cx: &mut TestAppContext) {
+        let window = cx.add_window(|window, cx| {
+            let mut view = TerminalView::from_session(
+                Err(anyhow::anyhow!("paste fixture")),
+                "paste".into(),
+                String::new(),
+                false,
+                cx,
+            );
+            view.state = State::Running;
+            window.focus(&view.focus);
+            view
+        });
+        cx.simulate_keystrokes(*window, "ctrl-shift-v");
+        window
+            .update(cx, |view, _, _| {
+                assert!(
+                    view.error
+                        .as_deref()
+                        .unwrap()
+                        .contains("Clipboard text is unavailable")
+                )
+            })
+            .unwrap();
+        cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("paste text".into())));
+        cx.simulate_keystrokes(*window, "shift-insert");
+        window
+            .update(cx, |view, window, cx| {
+                assert!(view.error.is_none());
+                let mut keystroke = Keystroke::parse("ctrl-shift-v").unwrap();
+                keystroke.key = "V".into();
+                view.error = Some("previous error".into());
+                view.key_down(
+                    &KeyDownEvent {
+                        keystroke,
+                        is_held: false,
+                    },
+                    window,
+                    cx,
+                );
+                assert!(view.error.is_none());
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    let mut keystroke = Keystroke::parse("v").unwrap();
+                    keystroke.modifiers.platform = true;
+                    view.error = Some("previous error".into());
+                    view.key_down(
+                        &KeyDownEvent {
+                            keystroke,
+                            is_held: false,
+                        },
+                        window,
+                        cx,
+                    );
+                    assert!(view.error.is_none());
+                }
+            })
+            .unwrap();
+    }
+    #[gpui::test]
+    fn right_click_menu_pastes_and_escape_dismisses(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut view = TerminalView::from_session(
+                Err(anyhow::anyhow!("menu fixture")),
+                "menu".into(),
+                String::new(),
+                false,
+                cx,
+            );
+            view.state = State::Running;
+            view
+        });
+        cx.simulate_resize(gpui::size(gpui::px(700.), gpui::px(450.)));
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.pointer_down(
+                    &gpui::MouseDownEvent {
+                        button: gpui::MouseButton::Right,
+                        position: gpui::point(gpui::px(100.), gpui::px(120.)),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert!(cx.debug_bounds("terminal-clipboard-menu").is_some());
+        cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("menu paste".into())));
+        let bounds = cx.debug_bounds("terminal-menu-paste").unwrap();
+        let position = bounds.origin + gpui::point(gpui::px(10.), gpui::px(10.));
+        cx.simulate_mouse_down(position, gpui::MouseButton::Left, Default::default());
+        cx.simulate_mouse_up(position, gpui::MouseButton::Left, Default::default());
+        cx.update(|_, cx| {
+            assert!(view.read(cx).context_menu.is_none());
+            assert!(view.read(cx).error.is_none());
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.context_menu = Some(position);
+                cx.notify();
+            })
+        });
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| assert!(view.read(cx).context_menu.is_none()));
     }
 }

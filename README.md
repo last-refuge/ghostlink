@@ -81,6 +81,8 @@ Applications such as Neovim and tmux receive mouse clicks, drag/release events, 
 
 Closing a pane terminates its remote shell. Closing a tab terminates its panes; closing a sidebar session terminates all its tabs. Other sessions keep running. Closing a session's final tab removes its sidebar entry, and closing the final session returns to the connection picker. Application shutdown requests worker cancellation through GPUI's asynchronous quit hook. Tabs and layouts are retained while switching sessions within the running app; restart recovery remains future work.
 
+On Linux/Omarchy, terminal copy/paste also accepts **Super+C / Super+V** alongside **Ctrl+Shift+C / Ctrl+Shift+V**. Right-click opens a Copy/Paste menu. When a terminal application captures mouse events, use **Shift+right-click** to open Ghostlink's menu. **Shift+Insert** also pastes.
+
 ## Connect with SSH
 
 The connection picker opens at startup and whenever you choose **New session**. Saved hosts appear in a searchable list on the left, with host details on the right. Small windows show one panel at a time; choose **Browse hosts** to return to the list. Hosts can be organized into collapsible parent groups and tagged; search matches labels, addresses, usernames, groups, and tags.
