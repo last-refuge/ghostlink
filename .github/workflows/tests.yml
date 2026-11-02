@@ -1,0 +1,88 @@
+name: Tests
+
+# The test suite runs separately from the installer builds, so a failing or
+# flaky test is reported here without blocking the Preview release.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    name: ${{ matrix.os }} / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos, arch: aarch64, runner: macos-15 }
+          - { os: macos, arch: x86_64, runner: macos-15-intel }
+          - { os: linux, arch: x86_64, runner: ubuntu-24.04 }
+          - { os: linux, arch: aarch64, runner: ubuntu-24.04-arm }
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Linux development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake clang libclang-dev pkg-config libssl-dev \
+            libfontconfig1-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev libwayland-dev libvulkan1 fonts-dejavu-core \
+            openssh-client desktop-file-utils
+      - name: Check Linux installer scripts
+        if: runner.os == 'Linux'
+        run: |
+          bash -n install.sh scripts/test-linux-installer.sh
+          bash scripts/test-linux-installer.sh
+          python3 scripts/test-prepare-release.py
+          desktop-file-validate packaging/linux/io.github.last-refuge.ghostlink.desktop
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
+      - name: Build pinned libghostty-vt
+        run: bash scripts/bootstrap.sh
+      - name: Check formatting
+        run: bash scripts/dev.sh fmt
+      - name: Lint
+        run: bash scripts/dev.sh clippy
+      - name: Test
+        run: bash scripts/dev.sh test
+
+  windows:
+    name: windows / x86_64
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
+      - name: Build pinned libghostty-vt
+        run: ./scripts/bootstrap.ps1
+      - name: Check formatting
+        run: ./scripts/dev.ps1 fmt
+      - name: Lint
+        run: ./scripts/dev.ps1 clippy
+      - name: Test
+        run: ./scripts/dev.ps1 test

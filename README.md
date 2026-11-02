@@ -44,7 +44,9 @@ Build output and Zig package extraction stay outside the source tree: `%TEMP%` o
 
 Rust is pinned in `rust-toolchain.toml`, direct crate versions are exact, and `Cargo.lock` pins the dependency graph. The helper reuses an installed stable compiler only if it matches the pinned Rust version exactly.
 
-The [Build installers workflow](https://github.com/last-refuge/ghostlink/actions/workflows/installers.yml) runs Windows checks, native macOS/Linux builds on both architectures, and an Arch package build. After every platform passes, it publishes all installers and SHA-256 checksums to the Preview release. Windows also tests installation, upgrade, and uninstall; Linux also smoke-tests application startup on a virtual display. Pull requests run the checks without publishing. The workflow can also be started manually.
+The [Build installers workflow](https://github.com/last-refuge/ghostlink/actions/workflows/installers.yml) builds Windows, native macOS/Linux on both architectures, and an Arch package. After every platform builds, it publishes all installers and SHA-256 checksums to the Preview release. It verifies the packages themselves: Windows tests installation, upgrade, and uninstall; Linux smoke-tests application startup on a virtual display. It does not run the test suite.
+
+The [Tests workflow](https://github.com/last-refuge/ghostlink/actions/workflows/tests.yml) runs formatting, Clippy, the Rust test suite, and the installer script tests on every platform, separately from the builds, so a test failure is reported without blocking the Preview release. Both workflows run on pushes to `main` and pull requests, and either can be started manually from the Actions tab or with `gh workflow run tests.yml`. Run the same checks locally with the `dev` script commands below.
 
 ## Controls
 

@@ -41,7 +41,7 @@ jobs:
           # Prevent an older build replacing a newer main preview.
           [[ "$(gh api "repos/$GH_REPO/commits/main" --jq .sha)" == "$GITHUB_SHA" ]] || exit 1
           cat > release-notes.md <<EOF
-          Automated preview built from $GITHUB_SHA. All native checks and packaging jobs passed.
+          Automated preview built from $GITHUB_SHA. All platform builds and packaging checks passed; the test suite runs separately in the Tests workflow.
 
           Linux / Arch / Omarchy:
           \`curl -fsSL https://github.com/$GH_REPO/releases/download/preview/install.sh | bash\`
