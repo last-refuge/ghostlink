@@ -603,15 +603,31 @@ impl Render for ConnectForm {
         .max(80.);
         let list = self.render_list(cx);
         let editor = self.render_editor(window, cx);
+        let editor_viewport = div()
+            .id("host-editor-scroll")
+            .debug_selector(|| "host-editor-scroll".into())
+            .track_scroll(&self.content_scroll)
+            .h_full()
+            .min_h_0()
+            .min_w_0()
+            .flex_1()
+            .overflow_y_scroll()
+            .child(editor.flex_none());
+        let list_viewport = div()
+            .id("host-list-scroll")
+            .h_full()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(list.flex_none());
         let content = if wide {
             div()
                 .flex()
-                .child(div().w(px(280.)).flex_none().child(list))
-                .child(editor)
+                .child(div().w(px(280.)).h_full().flex_none().child(list_viewport))
+                .child(editor_viewport)
         } else if self.compact_list {
-            div().child(list)
+            div().child(list_viewport)
         } else {
-            div().child(editor)
+            div().flex().child(editor_viewport)
         };
         let footer = div()
             .flex()
@@ -719,9 +735,10 @@ impl Render for ConnectForm {
             .child(
                 content
                     .id("host-content")
-                    .track_scroll(&self.content_scroll)
                     .h(px(content_height))
-                    .overflow_y_scroll(),
+                    .min_h_0()
+                    .flex_none()
+                    .overflow_hidden(),
             )
             .when_some(self.error.clone(), |root, error| {
                 root.child(div().text_xs().text_color(rgb(0xd7b77d)).child(error).when(

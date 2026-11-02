@@ -450,3 +450,24 @@ fn narrow_editor_tab_stays_visible_and_find_opens_the_host_list(cx: &mut TestApp
         assert!(editor.address.focus_handle(cx).is_focused(window));
     });
 }
+
+#[gpui::test]
+fn wheel_scroll_reaches_lower_host_options(cx: &mut TestAppContext) {
+    let store = ConnectionStore::local();
+    store.save(None, "Scrollable host", "example.org").unwrap();
+    let (form, cx) = cx.add_window_view(|_, cx| ConnectForm::new(store, true, cx));
+    for width in [1200., 700.] {
+        cx.simulate_resize(gpui::size(px(width), px(650.)));
+        cx.update(|_, cx| form.read(cx).content_scroll.set_offset(Default::default()));
+        let viewport = cx.debug_bounds("host-editor-scroll").unwrap();
+        let before = cx.debug_bounds("connection-keepalive").unwrap().top();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.origin + gpui::point(px(20.), px(20.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-5000.))),
+            ..Default::default()
+        });
+        let after = cx.debug_bounds("connection-keepalive").unwrap();
+        assert!(after.top() < before);
+        assert!(after.top() >= viewport.top() && after.bottom() <= viewport.bottom());
+    }
+}

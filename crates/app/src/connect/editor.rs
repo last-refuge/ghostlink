@@ -362,6 +362,7 @@ impl ConnectForm {
             .flex_col()
             .gap_3()
             .p_4()
+            .when(self.entries.is_empty() && !self.load_failed && f32::from(window.viewport_size().width) < 760., |editor| editor.child(super::list::empty_connections_artwork()))
             .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(
                 if editor.id.is_some() {
                     "Host details"

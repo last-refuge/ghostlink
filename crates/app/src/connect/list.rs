@@ -20,6 +20,9 @@ impl ConnectForm {
                     .text_color(rgb(0x9aada4))
                     .child("Find a host"),
             )
+            .when(self.entries.is_empty() && !self.load_failed, |list| {
+                list.child(empty_connections_artwork())
+            })
             .child(self.search.clone())
             .child(
                 action("add-connection", "+ New host", false).on_click(cx.listener(
@@ -129,4 +132,34 @@ impl ConnectForm {
                 ))
             })
     }
+}
+
+pub(super) fn empty_connections_artwork() -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap_2()
+        .py_2()
+        .flex_shrink_0()
+        .child(
+            gpui::img(crate::brand::illustration())
+                .id("empty-connections-illustration")
+                .debug_selector(|| "empty-connections-illustration".into())
+                .w_full()
+                .h(px(132.))
+                .object_fit(gpui::ObjectFit::Contain),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(0xdce3df))
+                .child("Your connections start here"),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(0x9aada4))
+                .child("Save your first host to keep it close."),
+        )
 }
