@@ -61,6 +61,7 @@ Source: "{#PayloadDir}\ghostlink.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\docs\building.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "{#PayloadDir}\docs\theme-licenses.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#InstallerName}"; Filename: "{app}\ghostlink.exe"; WorkingDir: "{app}"; AppUserModelID: "io.github.last-refuge.ghostlink"

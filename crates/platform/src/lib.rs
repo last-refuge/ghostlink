@@ -45,3 +45,7 @@ pub fn shortcut_hint(text: &str) -> String {
         text.to_owned()
     }
 }
+
+pub mod secrets;
+
+pub mod agent;

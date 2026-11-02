@@ -6,3 +6,19 @@ publish.workspace = true
 
 [dependencies]
 dirs.workspace = true
+anyhow.workspace = true
+async-channel.workspace = true
+zeroize.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", features = ["apple-native"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "=3.6.3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", features = ["async-secret-service", "tokio", "crypto-rust"] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -14,6 +14,8 @@ use zeroize::Zeroizing;
 
 mod automatic;
 mod config;
+mod proxy;
+pub use proxy::{ProxyKind, ProxyOptions};
 
 /// One authenticated transport, shared by a sidebar session's tabs and panes.
 #[derive(Clone)]
@@ -21,8 +23,23 @@ pub struct SshConnection(Arc<ConnectionInner>);
 struct ConnectionInner {
     profile: SshProfile,
     runtime: Option<tokio::runtime::Runtime>,
-    authenticated: tokio::sync::Mutex<Option<Arc<client::Handle<Verifier>>>>,
+    authenticated: tokio::sync::Mutex<Option<Arc<AuthenticatedRoute>>>,
 }
+struct AuthenticatedRoute {
+    connection: Arc<client::Handle<Verifier>>,
+    jumps: Vec<Arc<client::Handle<Verifier>>>,
+    agent_access: Arc<AtomicBool>,
+}
+impl AuthenticatedRoute {
+    fn is_closed(&self) -> bool {
+        self.connection.is_closed() || self.jumps.iter().any(|hop| hop.is_closed())
+    }
+}
+static NEXT_PROMPT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn next_prompt_id() -> u64 {
+    NEXT_PROMPT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 impl SshConnection {
     pub fn new(profile: SshProfile) -> Result<Self> {
         profile.validate()?;
@@ -92,6 +109,38 @@ impl fmt::Debug for SshAuth {
         }
     }
 }
+/// Per-host overrides; secrets are held only in zeroizing memory.
+#[derive(Clone, Default)]
+pub struct SshOptions {
+    pub identity_file: Option<PathBuf>,
+    pub proxy: Option<ProxyOptions>,
+    pub jump_hosts: Vec<SshProfile>,
+    pub display_name: Option<String>,
+    pub certificate: Option<PathBuf>,
+    pub agent_forwarding: bool,
+    pub agent_socket: Option<PathBuf>,
+    pub environment: Vec<(String, String)>,
+    pub startup_snippet: String,
+    pub keepalive_secs: Option<u64>,
+    pub control_h_backspace: bool,
+    pub charset: Option<String>,
+    pub theme: terminal_core::themes::Theme,
+    pub password: Option<Zeroizing<String>>,
+    pub password_only: bool,
+    pub credential_notice: Option<String>,
+    pub on_password_accepted: Option<Arc<dyn Fn(Zeroizing<String>) + Send + Sync>>,
+}
+impl fmt::Debug for SshOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SshOptions")
+            .field("identity_file", &self.identity_file)
+            .field("password", &self.password.as_ref().map(|_| "[redacted]"))
+            .field("password_only", &self.password_only)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SshProfile {
     pub host: String,
@@ -99,6 +148,7 @@ pub struct SshProfile {
     pub username: String,
     pub auth: SshAuth,
     pub known_hosts: PathBuf,
+    pub options: Box<SshOptions>,
 }
 impl SshProfile {
     pub fn from_destination(destination: &str) -> Result<Self> {
@@ -153,11 +203,31 @@ impl SshProfile {
             username,
             auth,
             known_hosts: directory.join("known_hosts"),
+            options: Box::default(),
         };
         profile.validate()?;
         Ok(profile)
     }
     pub fn validate(&self) -> Result<()> {
+        fn visit(profile: &SshProfile, count: &mut usize) -> Result<()> {
+            *count += 1;
+            ensure!(*count <= 9, "SSH route exceeds 8 jump hosts");
+            profile.validate_local()?;
+            for jump in &profile.options.jump_hosts {
+                visit(jump, count)?;
+            }
+            Ok(())
+        }
+        visit(self, &mut 0)
+    }
+    fn validate_local(&self) -> Result<()> {
+        if let Some(name) = &self.options.charset {
+            crate::charset::validate(name)?;
+        }
+        if let Some(proxy) = &self.options.proxy {
+            proxy.validate()?;
+        }
+
         ensure!(
             !self.host.is_empty()
                 && self.host.len() <= 253
@@ -185,6 +255,45 @@ impl SshProfile {
             !self.known_hosts.as_os_str().is_empty(),
             "A host-key store is required"
         );
+        ensure!(
+            self.options
+                .keepalive_secs
+                .is_none_or(|seconds| seconds <= 86400),
+            "Keep-alive must be between 0 and 86400 seconds"
+        );
+        ensure!(
+            self.options.startup_snippet.len() <= 64 * 1024
+                && !self.options.startup_snippet.contains('\0'),
+            "Invalid startup snippet"
+        );
+        ensure!(
+            self.options.environment.len() <= 128,
+            "Too many environment variables"
+        );
+        for (name, value) in &self.options.environment {
+            ensure!(
+                !name.is_empty()
+                    && name.len() <= 256
+                    && name
+                        .bytes()
+                        .enumerate()
+                        .all(|(index, byte)| byte.is_ascii_alphabetic()
+                            || byte == b'_'
+                            || index > 0 && byte.is_ascii_digit()),
+                "Invalid environment variable name"
+            );
+            ensure!(
+                value.len() <= 8192 && !value.contains('\0'),
+                "Invalid environment variable value"
+            );
+        }
+        if self.options.certificate.is_some() {
+            ensure!(
+                self.options.identity_file.is_some()
+                    || matches!(self.auth, SshAuth::PrivateKey { .. }),
+                "Choose a private key for the SSH certificate"
+            );
+        }
         if let SshAuth::PrivateKey { path, .. } = &self.auth {
             ensure!(!path.as_os_str().is_empty(), "Choose a private-key file");
             ensure!(path.is_absolute(), "Enter an absolute private-key path");
@@ -208,11 +317,14 @@ impl SshProfile {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostKeyPrompt {
+    pub id: u64,
+    pub name: Option<String>,
     pub host: String,
     pub algorithm: String,
     pub fingerprint: String,
 }
 pub(crate) struct HostKeyDecision {
+    pub id: u64,
     pub fingerprint: String,
     pub accept: bool,
 }
@@ -293,14 +405,58 @@ fn remember_host(path: &Path, host: &str, port: u16, key: &PublicKey) -> Result<
 
 struct Verifier {
     host: String,
+    name: Option<String>,
     port: u16,
     known_hosts: PathBuf,
     updates: Sender<Update>,
     stale: Receiver<Update>,
     decisions: Receiver<HostKeyDecision>,
+    agent_socket: Option<PathBuf>,
+    agent_access: Arc<AtomicBool>,
+    agent_slots: Arc<tokio::sync::Semaphore>,
 }
 impl client::Handler for Verifier {
     type Error = anyhow::Error;
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        if !self.agent_access.load(Ordering::Acquire) {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
+        let Some(path) = &self.agent_socket else {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        };
+        let Ok(permit) = self.agent_slots.clone().try_acquire_owned() else {
+            reply
+                .reject(russh::ChannelOpenFailure::ResourceShortage)
+                .await;
+            return Ok(());
+        };
+        let Ok(mut local) = ghostlink_platform::agent::connect(path).await else {
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        reply.accept().await;
+        tokio::spawn(async move {
+            let _permit = permit;
+            let mut remote = channel.into_stream();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(300),
+                tokio::io::copy_bidirectional(&mut remote, &mut local),
+            )
+            .await;
+        });
+        Ok(())
+    }
     async fn check_server_key(&mut self, presented: &PublicKeyOrCertificate) -> Result<bool> {
         ensure!(
             presented.certificate().is_none(),
@@ -317,6 +473,8 @@ impl client::Handler for Verifier {
             return Ok(true);
         }
         let prompt = HostKeyPrompt {
+            id: next_prompt_id(),
+            name: self.name.clone(),
             host: endpoint(&self.host, self.port),
             algorithm: key.algorithm().to_string(),
             fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
@@ -329,11 +487,20 @@ impl client::Handler for Verifier {
                 state: State::AwaitingHostKey(prompt.clone()),
             },
         );
-        let decision = self
-            .decisions
-            .recv()
-            .await
-            .context("Host-key verification cancelled")?;
+        let decision = tokio::time::timeout(Duration::from_secs(300), async {
+            loop {
+                let decision = self
+                    .decisions
+                    .recv()
+                    .await
+                    .context("Host-key verification cancelled")?;
+                if decision.id == prompt.id {
+                    return Ok::<_, anyhow::Error>(decision);
+                }
+            }
+        })
+        .await
+        .context("Host-key verification timed out")??;
         ensure!(
             decision.fingerprint == prompt.fingerprint && decision.accept,
             "Host key was not trusted; connection cancelled"
@@ -376,10 +543,24 @@ pub(crate) fn run(
     })
 }
 
+fn load_certificate(path: &Path) -> Result<keys::ssh_key::Certificate> {
+    ensure!(
+        fs::metadata(path)
+            .with_context(|| format!("Reading SSH certificate {}", path.display()))?
+            .len()
+            <= 64 * 1024,
+        "SSH certificate exceeds 64 KiB"
+    );
+    let text = fs::read_to_string(path).context("Reading SSH certificate")?;
+    keys::ssh_key::Certificate::from_openssh(text.trim())
+        .context("Invalid OpenSSH user certificate")
+}
+
 async fn authenticate(
     session: &mut client::Handle<Verifier>,
     username: &str,
     auth: SshAuth,
+    certificate: Option<PathBuf>,
 ) -> Result<()> {
     let success = match auth {
         SshAuth::Automatic { .. } => bail!("Automatic credentials were not resolved"),
@@ -397,14 +578,26 @@ async fn authenticate(
                 },
             )
             .context("Loading private key")?;
-            let hash = session.best_supported_rsa_hash().await?.flatten();
-            session
-                .authenticate_publickey(
-                    username,
-                    keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                )
-                .await?
-                .success()
+            if let Some(path) = certificate {
+                let certificate = load_certificate(&path)?;
+                ensure!(
+                    certificate.public_key() == key.public_key().key_data(),
+                    "The SSH certificate does not match the private key"
+                );
+                session
+                    .authenticate_openssh_cert(username, Arc::new(key), certificate)
+                    .await?
+                    .success()
+            } else {
+                let hash = session.best_supported_rsa_hash().await?.flatten();
+                session
+                    .authenticate_publickey(
+                        username,
+                        keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                    )
+                    .await?
+                    .success()
+            }
         }
         SshAuth::Agent => {
             #[cfg(windows)]
@@ -467,16 +660,16 @@ struct StartupMessages {
     bytes: usize,
 }
 
-async fn request_accepted(
+async fn request_reply(
     channel: &mut russh::ChannelReadHalf,
     name: &str,
     startup: &mut StartupMessages,
-) -> Result<()> {
+) -> Result<bool> {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             match channel.wait().await {
-                Some(ChannelMsg::Success) => return Ok(()),
-                Some(ChannelMsg::Failure) => bail!("Server refused the {name} request"),
+                Some(ChannelMsg::Success) => return Ok(true),
+                Some(ChannelMsg::Failure) => return Ok(false),
                 Some(ChannelMsg::Close) | None => {
                     bail!("SSH channel closed before the {name} request completed")
                 }
@@ -504,21 +697,19 @@ async fn request_accepted(
     .with_context(|| format!("Server did not answer the {name} request"))?
 }
 
-async fn authenticate_connection(
-    mut profile: SshProfile,
-    updates: &Sender<Update>,
-    stale: &Receiver<Update>,
-    decisions: Receiver<HostKeyDecision>,
-    credentials: Receiver<CredentialReply>,
-) -> Result<Arc<client::Handle<Verifier>>> {
-    publish(
-        updates,
-        stale,
-        Update {
-            screen: None,
-            state: State::Connecting,
-        },
+async fn request_accepted(
+    channel: &mut russh::ChannelReadHalf,
+    name: &str,
+    startup: &mut StartupMessages,
+) -> Result<()> {
+    ensure!(
+        request_reply(channel, name, startup).await?,
+        "Server refused the {name} request"
     );
+    Ok(())
+}
+
+fn resolve_hop(mut profile: SshProfile) -> Result<(SshProfile, Option<config::Resolved>)> {
     let automatic = if let SshAuth::Automatic { home } = &profile.auth {
         let resolved = config::resolve(&profile, home)?;
         profile.host = resolved.host.clone();
@@ -529,27 +720,60 @@ async fn authenticate_connection(
     } else {
         None
     };
-    let stream = tokio::time::timeout(
-        Duration::from_secs(15),
-        tokio::net::TcpStream::connect((profile.host.as_str(), profile.port)),
-    )
-    .await
-    .context("SSH connection timed out")?
-    .context("Connecting to SSH server")?;
-    // connect_stream accepts a pre-opened socket, so russh's Config::nodelay
-    // setting does not apply here. Interactive keystrokes must leave immediately.
-    stream
-        .set_nodelay(true)
-        .context("Configuring interactive SSH socket")?;
+    Ok((profile, automatic))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn authenticate_hop(
+    profile: SshProfile,
+    automatic: Option<config::Resolved>,
+    stream: proxy::Stream,
+    updates: &Sender<Update>,
+    stale: &Receiver<Update>,
+    decisions: Receiver<HostKeyDecision>,
+    prompts: automatic::Prompter,
+) -> Result<(Arc<client::Handle<Verifier>>, Arc<AtomicBool>)> {
+    let agent_access = Arc::new(AtomicBool::new(false));
+    let agent_socket = if profile.options.agent_forwarding {
+        profile
+            .options
+            .agent_socket
+            .clone()
+            .or_else(|| automatic.as_ref().and_then(|plan| plan.agent.clone()))
+            .or_else(|| {
+                if automatic.is_none() {
+                    std::env::var_os("SSH_AUTH_SOCK")
+                        .map(PathBuf::from)
+                        .or_else(config::default_agent)
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
+    let forwarding_available = if let Some(path) = &agent_socket {
+        ghostlink_platform::agent::connect(path).await.is_ok()
+    } else {
+        false
+    };
     let config = Arc::new(client::Config {
-        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_interval: match profile.options.keepalive_secs {
+            None => Some(Duration::from_secs(30)),
+            Some(0) => None,
+            Some(seconds) => Some(Duration::from_secs(seconds)),
+        },
         keepalive_max: 3,
         ..Default::default()
     });
     let verifier = Verifier {
         host: profile.host,
+        name: profile.options.display_name.clone(),
         port: profile.port,
         known_hosts: profile.known_hosts,
+        agent_socket,
+        agent_access: agent_access.clone(),
+        agent_slots: Arc::new(tokio::sync::Semaphore::new(16)),
         updates: updates.clone(),
         stale: stale.clone(),
         decisions,
@@ -575,18 +799,139 @@ async fn authenticate_connection(
             &mut connection,
             &profile.username,
             plan,
-            automatic::Prompter::new(updates, stale, credentials),
+            prompts,
+            *profile.options,
         )
         .await?;
     } else {
         tokio::time::timeout(
             Duration::from_secs(30),
-            authenticate(&mut connection, &profile.username, profile.auth),
+            authenticate(
+                &mut connection,
+                &profile.username,
+                profile.auth,
+                profile.options.certificate,
+            ),
         )
         .await
         .context("SSH authentication timed out")??;
     }
-    Ok(Arc::new(connection))
+    agent_access.store(forwarding_available, Ordering::Release);
+    Ok((Arc::new(connection), agent_access))
+}
+
+async fn authenticate_connection(
+    profile: SshProfile,
+    updates: &Sender<Update>,
+    stale: &Receiver<Update>,
+    decisions: Receiver<HostKeyDecision>,
+    credentials: Receiver<CredentialReply>,
+) -> Result<Arc<AuthenticatedRoute>> {
+    fn flatten(profile: &SshProfile, hops: &mut Vec<SshProfile>) -> Result<()> {
+        ensure!(hops.len() < 9, "SSH route exceeds 8 jump hosts");
+        for hop in &profile.options.jump_hosts {
+            flatten(hop, hops)?;
+        }
+        let mut hop = profile.clone();
+        hop.options.jump_hosts.clear();
+        ensure!(hops.len() < 9, "SSH route exceeds 8 jump hosts");
+        hops.push(hop);
+        Ok(())
+    }
+    profile.validate()?;
+    let mut profiles = Vec::new();
+    flatten(&profile, &mut profiles)?;
+    let mut hops = Vec::<Arc<client::Handle<Verifier>>>::new();
+    let mut final_agent = Arc::new(AtomicBool::new(false));
+    for profile in profiles {
+        let (mut profile, automatic) = resolve_hop(profile)?;
+        let context = profile
+            .options
+            .display_name
+            .clone()
+            .unwrap_or_else(|| profile.label());
+        let mut prompts = automatic::Prompter::new(updates, stale, credentials.clone())
+            .with_context(context.clone());
+        if let Some(proxy) = &mut profile.options.proxy
+            && proxy.needs_password()
+            && proxy.password.is_none()
+        {
+            proxy.password = Some(
+                prompts
+                    .ask(
+                        "Proxy password".into(),
+                        format!(
+                            "Password for proxy {}@{}:{}",
+                            proxy.username, proxy.host, proxy.port
+                        ),
+                        true,
+                    )
+                    .await?,
+            );
+        }
+        let (host, port) = profile
+            .options
+            .proxy
+            .as_ref()
+            .map(|proxy| (proxy.host.as_str(), proxy.port))
+            .unwrap_or((&profile.host, profile.port));
+        let stream: proxy::Stream = if let Some(previous) = hops.last() {
+            let channel = tokio::time::timeout(
+                Duration::from_secs(15),
+                previous.channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0),
+            )
+            .await
+            .with_context(|| format!("Jump host timed out opening {context}"))?
+            .with_context(|| {
+                format!(
+                    "Jump host could not open {context}; check forwarding policy and destination"
+                )
+            })?;
+            Box::new(channel.into_stream())
+        } else {
+            let stream = tokio::time::timeout(
+                Duration::from_secs(15),
+                tokio::net::TcpStream::connect((host, port)),
+            )
+            .await
+            .with_context(|| format!("Connecting to {context} timed out"))?
+            .with_context(|| format!("Connecting to {context}"))?;
+            stream
+                .set_nodelay(true)
+                .context("Configuring interactive SSH socket")?;
+            Box::new(stream)
+        };
+        let stream = if let Some(proxy) = &profile.options.proxy {
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                proxy::tunnel(stream, proxy, &profile.host, profile.port),
+            )
+            .await
+            .with_context(|| format!("Proxy handshake timed out for {context}"))?
+            .with_context(|| format!("Opening proxy tunnel for {context}"))?
+        } else {
+            stream
+        };
+        let (connection, agent) = authenticate_hop(
+            profile,
+            automatic,
+            stream,
+            updates,
+            stale,
+            decisions.clone(),
+            prompts,
+        )
+        .await
+        .with_context(|| format!("SSH hop {context}"))?;
+        hops.push(connection);
+        final_agent = agent;
+    }
+    let connection = hops.pop().context("SSH route is empty")?;
+    Ok(Arc::new(AuthenticatedRoute {
+        connection,
+        jumps: hops,
+        agent_access: final_agent,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -611,7 +956,8 @@ async fn connect(
             state: State::Connecting,
         },
     );
-    let connection = {
+    terminal.set_theme(shared.0.profile.options.theme)?;
+    let route = {
         let mut authenticated = shared.0.authenticated.lock().await;
         if authenticated
             .as_ref()
@@ -636,6 +982,7 @@ async fn connect(
             .expect("authenticated transport")
             .clone()
     };
+    let connection = route.connection.clone();
     let channel = tokio::time::timeout(Duration::from_secs(15), connection.channel_open_session())
         .await
         .context("SSH channel open timed out")??;
@@ -643,6 +990,10 @@ async fn connect(
     let writer = Arc::new(writer);
     let _close_channel = CloseChannel(writer.clone());
     let mut startup = StartupMessages::default();
+    let options = &shared.0.profile.options;
+    let mut codec = crate::charset::Codec::new(options.charset.as_deref().unwrap_or("UTF-8"))?;
+    let mut refused_environment = Vec::new();
+    let mut forwarding_notice = false;
     let opened = async {
         writer
             .request_pty(
@@ -656,6 +1007,21 @@ async fn connect(
             )
             .await?;
         request_accepted(&mut reader, "terminal", &mut startup).await?;
+        for (name, value) in &options.environment {
+            writer.set_env(true, name.clone(), value.clone()).await?;
+            if !request_reply(&mut reader, "environment", &mut startup).await? {
+                refused_environment.push(name.clone());
+            }
+        }
+        if options.agent_forwarding {
+            if route.agent_access.load(Ordering::Acquire) {
+                writer.agent_forward(true).await?;
+                forwarding_notice =
+                    !request_reply(&mut reader, "agent forwarding", &mut startup).await?;
+            } else {
+                forwarding_notice = true;
+            }
+        }
         writer.request_shell(true).await?;
         request_accepted(&mut reader, "shell", &mut startup).await
     }
@@ -664,7 +1030,7 @@ async fn connect(
         // Keep any server explanation visible alongside the connection error.
         for message in startup.events {
             if let ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } = message {
-                terminal.feed(&data);
+                terminal.feed(&codec.decode(&data, false));
             }
         }
         *last_screen = Some(Arc::new(terminal.snapshot()?));
@@ -673,6 +1039,25 @@ async fn connect(
     *online = true;
     if reconnecting {
         terminal.prepare_reconnect()?;
+    }
+    if forwarding_notice {
+        terminal.feed(b"Ghostlink: agent forwarding unavailable; check the local agent and server policy.\r\n");
+    }
+    for name in refused_environment {
+        terminal.feed(
+            format!("Ghostlink: server refused environment variable {name}; check AcceptEnv.\r\n")
+                .as_bytes(),
+        );
+    }
+    for line in options
+        .startup_snippet
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+    {
+        writer
+            .data_bytes(codec.encode_owned(format!("{line}\r").into_bytes()))
+            .await?;
     }
     let (write_tx, write_rx) = async_channel::bounded::<Outgoing>(64);
     let mut write_task = AbortWriter(tokio::spawn(async move {
@@ -725,9 +1110,11 @@ async fn connect(
                     dirty |= viewport_scrolled;
                     viewport_scrolled = false;
                 }
+                let text_encoding = !matches!(&event, Input::Mouse(_));
                 let bytes = match event {
                     Input::Text(text) => text.into_bytes(),
                     Input::Paste(text) => terminal.encode_paste(&text),
+                    Input::Key(Key::Backspace, mods) if options.control_h_backspace && !mods.shift && !mods.control && !mods.alt && !mods.super_key => vec![0x08],
                     Input::Key(key, mods) => terminal.encode_key(key, mods)?,
                     Input::Mouse(event) => terminal.encode_mouse(event)?,
                     Input::Scroll(delta) => { terminal.scroll(delta); viewport_scrolled = true; dirty = true; continue; },
@@ -737,6 +1124,7 @@ async fn connect(
                     },
                     Input::Select(_) | Input::Copy(_) | Input::Reconnect => continue,
                 };
+                let bytes = if text_encoding { codec.encode_owned(bytes) } else { bytes };
                 if !bytes.is_empty() { pending_bytes += bytes.len(); pending.push_back(Outgoing::Bytes(bytes)); }
             },
             event = async {
@@ -747,13 +1135,14 @@ async fn connect(
                 }
             } => match event {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    let replies = terminal.feed(&data);
+                    let replies = terminal.feed(&codec.decode(&data, false));
+                    let replies = codec.encode_owned(replies);
                     if !replies.is_empty() { pending_bytes += replies.len(); pending.push_back(Outgoing::Bytes(replies)); }
                     dirty = true;
                 },
                 Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
                 Some(ChannelMsg::ExitSignal { signal_name, .. }) => bail!("Remote shell terminated by {signal_name:?}"),
-                Some(ChannelMsg::Close) | None => break,
+                Some(ChannelMsg::Close) | None => { terminal.feed(&codec.decode(&[], true)); break; },
                 _ => {},
             },
             _ = render_tick.tick(), if startup.events.is_empty() => {

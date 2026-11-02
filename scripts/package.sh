@@ -27,6 +27,7 @@ if [[ "$ghostlink_os" == macos ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$app/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $MACOSX_DEPLOYMENT_TARGET" "$app/Contents/Info.plist"
+    cp "$ghostlink_root/docs/theme-licenses.md" "$app/Contents/Resources/theme-licenses.md"
     codesign --force --sign - "$app"
     codesign --verify --deep --strict "$app"
     ditto -c -k --sequesterRsrc --keepParent "$app" "$dist/$name.zip"
@@ -39,6 +40,7 @@ else
     install -m644 "$ghostlink_root/branding/ghostlink-logo-v1.png" "$package/share/pixmaps/ghostlink.png"
     cp "$ghostlink_root/README.md" "$package/README.md"
     cp "$ghostlink_root/docs/building.md" "$package/docs/building.md"
+    cp "$ghostlink_root/docs/theme-licenses.md" "$package/docs/theme-licenses.md"
     tar -czf "$dist/$name.tar.gz" -C "$stage" "$name"
     printf 'Linux archive: %s\n' "$dist/$name.tar.gz"
 fi

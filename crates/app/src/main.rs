@@ -5,6 +5,7 @@ mod chrome;
 mod connect;
 mod connections;
 mod field;
+mod host_options;
 mod layout;
 #[cfg(test)]
 mod tests;

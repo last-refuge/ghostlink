@@ -147,3 +147,33 @@ curl -fsSL https://github.com/last-refuge/ghostlink/releases/download/preview/in
 The script verifies checksums before installing. Arch/Omarchy x86_64 uses `pacman -U`; other Linux systems use `~/.local/bin/ghostlink` and `$XDG_DATA_HOME/applications` / `pixmaps` (default `~/.local/share`). The desktop launcher uses the full executable path, so it works even when `~/.local/bin` is absent from the desktop's PATH. Rerun to update. To remove a per-user install, delete that binary, `io.github.last-refuge.ghostlink.desktop`, and `pixmaps/ghostlink.png`; for the Arch package, use `sudo pacman -R ghostlink-git`. Saved connections and host trust are retained.
 
 A successful CI build proves compilation and automated behavior, while native rendering, key mappings, clipboard, IME, and mixed-DPI behavior remain separate runtime checks.
+
+## System keychain and host editor
+
+Saved host passwords are opt-in. Windows uses Credential Manager; macOS uses Keychain. Linux uses the freedesktop Secret Service API through a pure-Rust D-Bus client, so no libdbus development package is required. A running, unlocked provider such as GNOME Keyring or KWallet is needed to remember passwords on Arch/Omarchy. Without one, connections continue with interactive credential prompts. Native file browsing uses the existing xdg-desktop-portal integration on Linux; the key path can also be entered directly.
+
+All credential-store calls run on a dedicated worker thread. Normal tests use a failing credential-store fixture to verify fallback without accessing personal credentials. A separate manual round-trip test may show the OS keychain permission prompt:
+
+```bash
+source scripts/common.sh
+cargo test --locked -p ghostlink-platform native_password_round_trip_and_removal -- --ignored
+```
+
+This manual test creates a generated test password under Ghostlink's service identifier and removes it after verifying the round trip. Native keychain consent, desktop portal dialogs, and visual editor appearance still require platform checks beyond GPUI's simulated test backend.
+
+## Native OpenSSH feature gate
+
+On macOS or Linux with an OpenSSH server installed, run the isolated certificate/environment/forwarded-agent/jump-host gate:
+
+```bash
+source scripts/common.sh
+cargo test --locked -p session native_openssh_certificate_environment_and_forwarded_agent -- --ignored --nocapture
+```
+
+It starts an unprivileged `sshd` bound to loopback on a temporary port, creates a generated CA/user certificate and private agent, verifies an accepted environment variable and startup commands, and queries the forwarded agent, both directly and through an SSH TCP-forwarding hop. All keys, trust/config files, and agent sockets belong to the temporary fixture. It does not read the user's SSH keys or change the system SSH server configuration. This gate requires an accessible local account and may need the distribution's OpenSSH server prerequisites; it is separate from the normal client-only test dependencies.
+
+## Host routing, character sets, and themes
+
+The host editor supports ordered jump hosts, SOCKS5/SOCKS4a/HTTP CONNECT proxies, per-hop keychain credentials, legacy character sets, and nine terminal themes. SSH config `ProxyJump`/`ProxyCommand` remain unsupported; use the editor's saved-host routing controls. See the README for routing order and charset behavior. Theme license notices are included in every packaged distribution.
+
+Normal tests exercise proxy protocol handshakes, proxy connections before/after a jump, two-hop SSH routing, transport reuse/recovery, per-hop trust and credential isolation, editor-to-session mapping, secret-free catalog writes, charset packet boundaries, terminal palettes, and theme persistence after reconnect. These simulated/local transport checks do not establish native Windows, Linux desktop portal, or Omarchy renderer behavior.

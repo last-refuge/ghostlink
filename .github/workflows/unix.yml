@@ -1,7 +1,7 @@
 name: macOS and Linux builds
 
-# Builds and packages only. The test suite lives in tests.yml so a test failure
-# cannot block publishing installers.
+# Native builds/packages; the Arch package also runs its makepkg check() suite.
+# The broader native test matrix lives in tests.yml.
 
 on:
   pull_request:
@@ -91,7 +91,7 @@ jobs:
           runuser -u builder -- rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
           runuser -u builder -- env \
             "GHOSTLINK_SOURCE_URL=git+file:///home/builder/repository#commit=$revision" \
-            bash -c 'cd /home/builder/repository/packaging/arch && makepkg --cleanbuild --force --noconfirm --nocheck'
+            bash -c 'cd /home/builder/repository/packaging/arch && makepkg --cleanbuild --force --noconfirm'
           mkdir -p dist
           cp /home/builder/repository/packaging/arch/*.pkg.tar.zst dist/
       - uses: actions/upload-artifact@v7

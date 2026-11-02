@@ -21,8 +21,8 @@ portable-pty = "=0.9.0"
 cc = "=1.8.0"
 async-channel = "=2.5.0"
 russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa"] }
-tokio = { version = "=1.54.1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros"] }
-zeroize = "=1.9.1"
+tokio = { version = "=1.54.1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
+zeroize = { version = "=1.9.1", features = ["serde"] }
 rand = "=0.10.3"
 tempfile = "=3.27.0"
 glob = "=0.3.4"

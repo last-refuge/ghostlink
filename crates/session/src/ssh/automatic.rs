@@ -7,7 +7,7 @@ pub(super) struct Prompter {
     updates: Sender<Update>,
     stale: Receiver<Update>,
     replies: Receiver<CredentialReply>,
-    next_id: u64,
+    context: Option<String>,
 }
 impl Prompter {
     pub fn new(
@@ -19,17 +19,25 @@ impl Prompter {
             updates: updates.clone(),
             stale: stale.clone(),
             replies,
-            next_id: 0,
+            context: None,
         }
     }
-    async fn ask(
+    pub fn with_context(mut self, context: String) -> Self {
+        self.context = Some(context);
+        self
+    }
+    pub(super) async fn ask(
         &mut self,
         label: String,
         detail: String,
         secret: bool,
     ) -> Result<Zeroizing<String>> {
-        self.next_id += 1;
-        let id = self.next_id;
+        let id = next_prompt_id();
+        let detail = self
+            .context
+            .as_ref()
+            .map(|context| format!("{context}: {detail}"))
+            .unwrap_or(detail);
         publish(
             &self.updates,
             &self.stale,
@@ -43,12 +51,20 @@ impl Prompter {
                 }),
             },
         );
-        let reply = tokio::time::timeout(Duration::from_secs(300), self.replies.recv())
-            .await
-            .context("Authentication prompt timed out")?
-            .context("Authentication cancelled")?;
-        ensure!(reply.id == id, "Stale authentication response");
-        let value = reply.value.context("Authentication cancelled")?;
+        let value = tokio::time::timeout(Duration::from_secs(300), async {
+            loop {
+                let reply = self
+                    .replies
+                    .recv()
+                    .await
+                    .context("Authentication cancelled")?;
+                if reply.id == id {
+                    return reply.value.context("Authentication cancelled");
+                }
+            }
+        })
+        .await
+        .context("Authentication prompt timed out")??;
         publish(
             &self.updates,
             &self.stale,
@@ -84,6 +100,7 @@ pub(super) async fn authenticate(
     username: &str,
     plan: config::Resolved,
     mut prompts: Prompter,
+    options: SshOptions,
 ) -> Result<()> {
     let mut remaining = MethodSet::empty();
     if auth_result(
@@ -91,6 +108,12 @@ pub(super) async fn authenticate(
         &mut remaining,
     ) {
         return Ok(());
+    }
+    if options.identity_file.is_some() {
+        ensure!(
+            plan.identities.first().is_some_and(|path| path.is_file()),
+            "The selected SSH private key is unavailable or public-key authentication is disabled"
+        );
     }
     let mut candidates = Vec::<(PathBuf, PublicKey)>::new();
     let mut errors = Vec::new();
@@ -108,7 +131,11 @@ pub(super) async fn authenticate(
     let mut agent_rejected = false;
     for method in plan.methods.iter().copied() {
         if method == MethodKind::PublicKey && remaining.contains(&MethodKind::PublicKey) {
-            let (result, offered) = agent_auth(connection, username, &plan, &candidates).await?;
+            let (result, offered) = if plan.certificate.is_none() {
+                agent_auth(connection, username, &plan, &candidates).await?
+            } else {
+                (None, 0)
+            };
             if let Some(result) = result {
                 if auth_result(result, &mut remaining) {
                     return Ok(());
@@ -126,7 +153,53 @@ pub(super) async fn authenticate(
                     path: path.clone(),
                     prompts: &mut prompts,
                     interactive: plan.interactive,
+                    unlocked: None,
                 };
+                let explicit_certificate = plan
+                    .certificate
+                    .as_ref()
+                    .filter(|_| Some(path) == plan.identities.first());
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push("-cert.pub");
+                let sidecar = PathBuf::from(sidecar);
+                if let Some(certificate_path) =
+                    explicit_certificate.or_else(|| sidecar.is_file().then_some(&sidecar))
+                {
+                    let certificate = (|| -> Result<keys::ssh_key::Certificate> {
+                        let certificate = load_certificate(certificate_path)?;
+                        ensure!(
+                            certificate.public_key() == public.key_data(),
+                            "The SSH certificate does not match {}",
+                            path.display()
+                        );
+                        Ok(certificate)
+                    })();
+                    let certificate = match certificate {
+                        Ok(certificate) => Some(certificate),
+                        Err(error) if explicit_certificate.is_some() => return Err(error),
+                        Err(error) => {
+                            errors.push(format!("{}: {error}", certificate_path.display()));
+                            None
+                        }
+                    };
+                    if let Some(certificate) = certificate {
+                        let key = signer.load().await?;
+                        if auth_result(
+                            network(connection.authenticate_openssh_cert(
+                                username,
+                                Arc::new(key),
+                                certificate,
+                            ))
+                            .await?,
+                            &mut remaining,
+                        ) {
+                            return Ok(());
+                        }
+                        if !remaining.contains(&MethodKind::PublicKey) {
+                            break;
+                        }
+                    }
+                }
                 // The signer is called only after the server accepts this public key.
                 // A passphrase prompt therefore never appears for an unrelated key.
                 let result = tokio::time::timeout(
@@ -207,6 +280,20 @@ pub(super) async fn authenticate(
             && plan.password
             && remaining.contains(&MethodKind::Password)
         {
+            if let Some(password) = &options.password {
+                if auth_result(
+                    network(connection.authenticate_password(username, password.as_str())).await?,
+                    &mut remaining,
+                ) {
+                    if let Some(callback) = &options.on_password_accepted {
+                        callback(password.clone());
+                    }
+                    return Ok(());
+                }
+                if !remaining.contains(&MethodKind::Password) {
+                    continue;
+                }
+            }
             for attempt in 0..3 {
                 let detail = if attempt == 0 {
                     join(format!("Password for {username}@{}.", plan.host), &hint)
@@ -219,11 +306,18 @@ pub(super) async fn authenticate(
                         &hint,
                     )
                 };
+                let detail = match &options.credential_notice {
+                    Some(notice) => format!("{detail}\n{notice}"),
+                    None => detail,
+                };
                 let password = prompts.ask("Password".into(), detail, true).await?;
                 if auth_result(
                     network(connection.authenticate_password(username, password.as_str())).await?,
                     &mut remaining,
                 ) {
+                    if let Some(callback) = &options.on_password_accepted {
+                        callback(password);
+                    }
                     return Ok(());
                 }
                 if !remaining.contains(&MethodKind::Password) {
@@ -273,8 +367,7 @@ fn rejection_hint(
         hint = join(
             hint,
             &format!(
-                "This connection does not name a remote user, so Ghostlink signed in as your local username \"{username}\". If your account on this server has a different name, cancel and change the destination to user@{}.",
-                plan.host
+                "This connection does not name a remote user, so Ghostlink signed in as your local username \"{username}\". If your account on this server has a different name, cancel and set this host's Username to that account."
             ),
         );
     }
@@ -306,15 +399,13 @@ struct FileSigner<'a> {
     path: PathBuf,
     prompts: &'a mut Prompter,
     interactive: bool,
+    unlocked: Option<keys::PrivateKey>,
 }
-impl Signer for FileSigner<'_> {
-    type Error = anyhow::Error;
-    async fn auth_sign(
-        &mut self,
-        identity: &AgentIdentity,
-        hash: Option<HashAlg>,
-        mut data: Vec<u8>,
-    ) -> Result<Vec<u8>> {
+impl FileSigner<'_> {
+    async fn load(&mut self) -> Result<keys::PrivateKey> {
+        if let Some(key) = &self.unlocked {
+            return Ok(key.clone());
+        }
         let text =
             Zeroizing::new(fs::read_to_string(&self.path).context("Reading private identity")?);
         let mut key = keys::decode_secret_key(&text, None);
@@ -350,6 +441,19 @@ impl Signer for FileSigner<'_> {
             }
         }
         let key = key.context("Could not unlock SSH identity")?;
+        self.unlocked = Some(key.clone());
+        Ok(key)
+    }
+}
+impl Signer for FileSigner<'_> {
+    type Error = anyhow::Error;
+    async fn auth_sign(
+        &mut self,
+        identity: &AgentIdentity,
+        hash: Option<HashAlg>,
+        mut data: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let key = self.load().await?;
         ensure!(
             key.public_key().key_data() == identity.public_key().key_data(),
             "The private key does not match its public identity"
@@ -376,21 +480,10 @@ async fn agent_auth(
     let Some(path) = &plan.agent else {
         return Ok((None, 0));
     };
-    #[cfg(windows)]
-    let agent = tokio::time::timeout(
-        Duration::from_millis(500),
-        keys::agent::client::AgentClient::connect_named_pipe(path),
-    )
-    .await;
-    #[cfg(unix)]
-    let agent = tokio::time::timeout(
-        Duration::from_millis(500),
-        keys::agent::client::AgentClient::connect_uds(path),
-    )
-    .await;
-    let Ok(Ok(mut agent)) = agent else {
+    let Ok(stream) = ghostlink_platform::agent::connect(path).await else {
         return Ok((None, 0));
     };
+    let mut agent = keys::agent::client::AgentClient::connect(stream);
     let identities = tokio::time::timeout(Duration::from_secs(2), agent.request_identities()).await;
     let Ok(Ok(identities)) = identities else {
         return Ok((None, 0));

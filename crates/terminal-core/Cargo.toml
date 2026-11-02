@@ -7,3 +7,4 @@ publish.workspace = true
 [dependencies]
 ghostty-sys = { path = "../ghostty-sys" }
 anyhow.workspace = true
+serde.workspace = true

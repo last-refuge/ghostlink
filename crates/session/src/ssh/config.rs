@@ -10,6 +10,7 @@ pub(super) struct Resolved {
     pub implicit_user: bool,
     pub port: u16,
     pub identities: Vec<PathBuf>,
+    pub certificate: Option<PathBuf>,
     pub agent: Option<PathBuf>,
     pub identities_only: bool,
     pub password: bool,
@@ -71,7 +72,7 @@ fn resolve_with_user(profile: &SshProfile, home: &Path, local_user: &str) -> Res
         profile.port
     };
     let expand = |value: &str| expand(value, home, &host, &profile.host, &user, local_user, port);
-    let identity_names = if options.identities.is_empty() {
+    let mut identity_names = if options.identities.is_empty() {
         vec![
             "~/.ssh/id_ed25519".into(),
             "~/.ssh/id_ecdsa".into(),
@@ -80,6 +81,9 @@ fn resolve_with_user(profile: &SshProfile, home: &Path, local_user: &str) -> Res
     } else {
         options.identities
     };
+    if let Some(path) = &profile.options.identity_file {
+        identity_names.insert(0, path.to_string_lossy().into_owned());
+    }
     let mut identities = Vec::new();
     if options.public_key != Some(false) {
         for name in identity_names {
@@ -107,27 +111,48 @@ fn resolve_with_user(profile: &SshProfile, home: &Path, local_user: &str) -> Res
             .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from))
             .or_else(default_agent)
     };
+    let certificate = profile
+        .options
+        .certificate
+        .as_ref()
+        .map(|path| -> Result<PathBuf> {
+            let path = PathBuf::from(expand(&path.to_string_lossy())?);
+            Ok(if path.is_absolute() {
+                path
+            } else {
+                home.join(path)
+            })
+        })
+        .transpose()?;
     Ok(Resolved {
         host,
         user,
         implicit_user,
         port,
         identities,
+        certificate,
         agent,
         identities_only: options.identities_only.unwrap_or(false),
         password: options.password.unwrap_or(true),
         keyboard: options.keyboard.unwrap_or(true),
         interactive: !options.batch.unwrap_or(false),
-        methods: options.methods.unwrap_or_else(|| {
+        methods: if profile.options.password_only {
             vec![
-                russh::MethodKind::PublicKey,
-                russh::MethodKind::KeyboardInteractive,
                 russh::MethodKind::Password,
+                russh::MethodKind::KeyboardInteractive,
             ]
-        }),
+        } else {
+            options.methods.unwrap_or_else(|| {
+                vec![
+                    russh::MethodKind::PublicKey,
+                    russh::MethodKind::KeyboardInteractive,
+                    russh::MethodKind::Password,
+                ]
+            })
+        },
     })
 }
-fn default_agent() -> Option<PathBuf> {
+pub(super) fn default_agent() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         Some(PathBuf::from(r"\\.\pipe\openssh-ssh-agent"))
@@ -474,6 +499,7 @@ mod tests {
             auth: SshAuth::Automatic {
                 home: PathBuf::new(),
             },
+            options: Default::default(),
             known_hosts: "unused".into(),
         }
     }

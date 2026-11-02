@@ -9,6 +9,7 @@ fn profile(user: &str) -> SshProfile {
         port: 9,
         username: user.into(),
         auth: SshAuth::Agent,
+        options: Default::default(),
         known_hosts: "unused-test-known-hosts".into(),
     }
 }
@@ -166,7 +167,7 @@ fn saved_connection_picker_fits_small_windows_and_returns_to_the_active_session(
     let name = cx.debug_bounds("connection-name").unwrap();
     let destination = cx.debug_bounds("connection-destination").unwrap();
     assert!(name.size.height >= px(38.) && destination.size.height >= px(38.));
-    assert!(name.bottom() < destination.top() && destination.bottom() < save.top());
+    assert!(destination.bottom() < name.top() && name.bottom() < save.top());
     assert!(
         save.bottom() <= modal.bottom() && modal.bottom() <= px(520.),
         "{save:?} {modal:?}"

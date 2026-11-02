@@ -79,6 +79,7 @@ Copy-Item -LiteralPath $binary -Destination (Join-Path $payload 'ghostlink.exe')
 Get-ChildItem -LiteralPath $runtime.FullName -Filter '*.dll' -File | Copy-Item -Destination $payload
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $payload
 Copy-Item -LiteralPath (Join-Path $root 'docs/building.md') -Destination (Join-Path $payload 'docs/building.md')
+Copy-Item -LiteralPath (Join-Path $root 'docs/theme-licenses.md') -Destination (Join-Path $payload 'docs/theme-licenses.md')
 $recipe = Join-Path $root 'packaging/windows/ghostlink.iss'
 $outputName = "ghostlink-$version-windows-x86_64-setup"
 & $compiler --quiet-progress --no-ide-signtools "--define=AppVersion=$version" "--define=FileVersion=$fileVersion" "--define=PayloadDir=$payload" "--define=OutputDir=$dist" "--define=RunningMutex=$runningMutex" "--define=OutputName=$outputName" $recipe

@@ -1,5 +1,6 @@
 //! Session workers and bounded transport queues.
 
+pub mod charset;
 #[cfg(all(test, windows))]
 mod full_screen;
 #[cfg(test)]
@@ -7,7 +8,10 @@ mod probe;
 mod ssh;
 #[cfg(all(test, unix))]
 mod unix_tests;
-pub use ssh::{CredentialPrompt, HostKeyPrompt, SshAuth, SshConnection, SshProfile};
+pub use ssh::{
+    CredentialPrompt, HostKeyPrompt, ProxyKind, ProxyOptions, SshAuth, SshConnection, SshOptions,
+    SshProfile,
+};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use async_channel::{Receiver, Sender};
@@ -244,11 +248,12 @@ impl Session {
             credentials: Some(credentials),
         })
     }
-    pub fn verify_host(&self, fingerprint: String, accept: bool) -> Result<()> {
+    pub fn verify_host(&self, id: u64, fingerprint: String, accept: bool) -> Result<()> {
         self.host_decisions
             .as_ref()
             .context("This is not an SSH session")?
             .try_send(ssh::HostKeyDecision {
+                id,
                 fingerprint,
                 accept,
             })

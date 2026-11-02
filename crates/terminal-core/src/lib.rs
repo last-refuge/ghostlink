@@ -1,5 +1,7 @@
 //! Safe ownership and immutable terminal snapshots.
 
+pub mod themes;
+
 use anyhow::{Result, bail, ensure};
 use ghostty_sys as sys;
 use std::{ffi::c_void, marker::PhantomData, ops::Range, ptr::NonNull, rc::Rc};
@@ -58,6 +60,7 @@ pub struct Cursor {
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub background: u32,
     pub size: GridSize,
     pub cells: Vec<Cell>,
     pub cursor: Cursor,
@@ -216,6 +219,7 @@ impl Modifiers {
 pub struct Terminal {
     raw: NonNull<sys::RawTerminal>,
     size: GridSize,
+    theme: themes::Theme,
     _single_owner: PhantomData<Rc<()>>,
 }
 impl Terminal {
@@ -226,8 +230,24 @@ impl Terminal {
         Ok(Self {
             raw,
             size,
+            theme: themes::Theme::default(),
             _single_owner: PhantomData,
         })
+    }
+    pub fn set_theme(&mut self, theme: themes::Theme) -> Result<()> {
+        let colors = theme.colors();
+        // SAFETY: exclusive handle and fixed 16-entry palette live for the call.
+        check(unsafe {
+            sys::gl_terminal_set_colors(
+                self.raw.as_ptr(),
+                colors.foreground,
+                colors.background,
+                colors.cursor,
+                colors.palette.as_ptr(),
+            )
+        })?;
+        self.theme = theme;
+        Ok(())
     }
     /// Process every byte and return terminal-generated replies for the transport.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
@@ -262,6 +282,7 @@ impl Terminal {
     }
     pub fn snapshot(&mut self) -> Result<Snapshot> {
         let mut snapshot = Snapshot {
+            background: self.theme.colors().background,
             size: self.size,
             cells: vec![Cell::default(); self.size.columns as usize * self.size.rows as usize],
             cursor: Cursor::default(),
@@ -323,6 +344,7 @@ impl Terminal {
                 &mut cursor,
                 &mut has_selection,
                 &mut modes,
+                &mut snapshot.background,
             )
         })?;
         snapshot.cursor = Cursor {
@@ -423,6 +445,7 @@ impl Terminal {
     /// Start a clean protocol/parser state, retaining styled output in scrollback.
     pub fn prepare_reconnect(&mut self) -> Result<()> {
         let mut fresh = Self::new(self.size)?;
+        fresh.set_theme(self.theme)?;
         let alternate = self.snapshot()?.alternate_screen;
         let active = self.archive()?;
         if alternate {

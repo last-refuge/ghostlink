@@ -436,7 +436,10 @@ impl Render for TerminalView {
             .border_color(rgb(if focused { 0x40594c } else { 0x28312e }))
             .rounded(px(5.))
             .overflow_hidden()
-            .bg(rgb(0x111517))
+            .bg(rgb(self
+                .screen
+                .as_ref()
+                .map_or(0x111517, |screen| screen.background)))
             .track_focus(&self.focus)
             .key_context("Terminal")
             .on_key_down(cx.listener(Self::key_down))
@@ -489,6 +492,7 @@ impl Render for TerminalView {
                 )
             })
             .when_some(host_prompt, |root, prompt| {
+                let challenge_id = prompt.id;
                 let fingerprint = prompt.fingerprint.clone();
                 let rejected_fingerprint = fingerprint.clone();
                 root.child(
@@ -501,6 +505,9 @@ impl Render for TerminalView {
                         .bg(rgb(0x28251e))
                         .text_color(rgb(0xd7b77d))
                         .child(format!("First connection to {}", prompt.host))
+                        .when_some(prompt.name.clone(), |root, name| {
+                            root.child(format!("Host: {name}"))
+                        })
                         .child("Compare this fingerprint with a trusted source before connecting.")
                         .child(format!("{} · {}", prompt.algorithm, prompt.fingerprint))
                         .child(
@@ -519,6 +526,7 @@ impl Render for TerminalView {
                                             if let Some(session) = &this.session {
                                                 this.error = session
                                                     .verify_host(
+                                                        challenge_id,
                                                         rejected_fingerprint.clone(),
                                                         false,
                                                     )
@@ -542,7 +550,11 @@ impl Render for TerminalView {
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             if let Some(session) = &this.session {
                                                 this.error = session
-                                                    .verify_host(fingerprint.clone(), true)
+                                                    .verify_host(
+                                                        challenge_id,
+                                                        fingerprint.clone(),
+                                                        true,
+                                                    )
                                                     .err()
                                                     .map(|error| error.to_string());
                                             }

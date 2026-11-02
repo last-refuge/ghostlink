@@ -7,8 +7,6 @@ use gpui::{
 use std::sync::Arc;
 use terminal_core::{Cell, Snapshot};
 
-const DEFAULT_BACKGROUND: u32 = 0x111517;
-
 #[derive(Default)]
 pub(crate) struct RenderCache {
     screen: Option<Arc<Snapshot>>,
@@ -51,10 +49,11 @@ impl RenderCache {
             return self.frame.clone();
         }
         let columns = screen.size.columns() as usize;
-        let previous = self
-            .screen
-            .as_ref()
-            .filter(|old| self.width == width && old.size.columns() == screen.size.columns());
+        let previous = self.screen.as_ref().filter(|old| {
+            self.width == width
+                && old.size.columns() == screen.size.columns()
+                && old.background == screen.background
+        });
         let rows = screen
             .cells
             .chunks(columns)
@@ -65,7 +64,7 @@ impl RenderCache {
                 }) {
                     self.frame.rows[index].clone()
                 } else {
-                    Arc::new(Row::new(cells, width, window))
+                    Arc::new(Row::new(cells, width, screen.background, window))
                 }
             })
             .collect();
@@ -89,10 +88,10 @@ fn ascii_cell(cell: &Cell) -> bool {
         && (cell.text.as_bytes()[0].is_ascii_graphic() || cell.text == " ")
 }
 impl Row {
-    fn new(cells: &[Cell], width: Pixels, window: &Window) -> Self {
+    fn new(cells: &[Cell], width: Pixels, background: u32, window: &Window) -> Self {
         let mut backgrounds: Vec<Background> = Vec::new();
         for (column, cell) in cells.iter().enumerate() {
-            if cell.background == DEFAULT_BACKGROUND {
+            if cell.background == background {
                 continue;
             }
             if let Some(last) = backgrounds.last_mut()

@@ -102,6 +102,7 @@ fn failed_ssh_connection_exposes_reconnect_and_the_shortcut_retries_in_place(
                 port: 9,
                 username: "fixture".into(),
                 auth: session::SshAuth::Agent,
+                options: Default::default(),
                 known_hosts: "unused-test-known-hosts".into(),
             },
             cx,

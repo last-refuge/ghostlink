@@ -52,6 +52,13 @@ unsafe extern "C" {
         callback: WriteCallback,
         context: *mut c_void,
     );
+    pub fn gl_terminal_set_colors(
+        terminal: *mut RawTerminal,
+        foreground: u32,
+        background: u32,
+        cursor: u32,
+        palette16: *const u32,
+    ) -> c_int;
     pub fn gl_terminal_resize(terminal: *mut RawTerminal, columns: u16, rows: u16) -> c_int;
     pub fn gl_terminal_snapshot(
         terminal: *mut RawTerminal,
@@ -61,6 +68,7 @@ unsafe extern "C" {
         cursor: *mut RawCursor,
         has_selection: *mut bool,
         modes: *mut u8,
+        background: *mut u32,
     ) -> c_int;
     pub fn gl_terminal_mouse(
         terminal: *mut RawTerminal,

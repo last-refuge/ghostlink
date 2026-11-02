@@ -93,10 +93,27 @@ int gl_terminal_resize(GlTerminal *self, uint16_t columns, uint16_t rows) {
 }
 
 #define TRY(call) do { GhosttyResult result = (call); if (result != GHOSTTY_SUCCESS) return result; } while (0)
-int gl_terminal_snapshot(GlTerminal *self, GlCellCallback callback, GlSelectionCallback selected, void *context, GlCursor *cursor, bool *has_selection, uint8_t *modes) {
+int gl_terminal_set_colors(GlTerminal *self, uint32_t fg, uint32_t bg, uint32_t cursor, const uint32_t *palette16) {
+    GhosttyColorRgb foreground = {(fg >> 16) & 255, (fg >> 8) & 255, fg & 255};
+    GhosttyColorRgb background = {(bg >> 16) & 255, (bg >> 8) & 255, bg & 255};
+    GhosttyColorRgb caret = {(cursor >> 16) & 255, (cursor >> 8) & 255, cursor & 255};
+    GhosttyColorRgb palette[256];
+    TRY(ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, &palette));
+    for (size_t i = 0; i < 16; ++i) {
+        uint32_t value = palette16[i];
+        palette[i] = (GhosttyColorRgb){(value >> 16) & 255, (value >> 8) & 255, value & 255};
+    }
+    TRY(ghostty_terminal_set(self->terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground));
+    TRY(ghostty_terminal_set(self->terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background));
+    TRY(ghostty_terminal_set(self->terminal, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, &caret));
+    TRY(ghostty_terminal_set(self->terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, &palette));
+    return GHOSTTY_SUCCESS;
+}
+int gl_terminal_snapshot(GlTerminal *self, GlCellCallback callback, GlSelectionCallback selected, void *context, GlCursor *cursor, bool *has_selection, uint8_t *modes, uint32_t *background) {
     TRY(ghostty_render_state_update(self->render, self->terminal));
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
     TRY(ghostty_render_state_colors_get(self->render, &colors));
+    *background = rgb(colors.background);
     GhosttySelection active_selection = GHOSTTY_INIT_SIZED(GhosttySelection);
     GhosttyResult active_result = ghostty_terminal_get(self->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &active_selection);
     if (active_result != GHOSTTY_SUCCESS && active_result != GHOSTTY_NO_VALUE) return active_result;
